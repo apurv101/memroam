@@ -28,9 +28,27 @@ A project connection can access its own directory and `shared/`, but not other p
 ## Requirements
 
 - Node.js 18 or newer
-- An MCP client that supports Streamable HTTP
+- An MCP client that supports stdio (global install) or Streamable HTTP (per-repo install)
 
 Memory Vault has no runtime dependencies.
+
+## Install globally (recommended)
+
+Wire every harness on your machine once:
+
+```sh
+npx -y memory-vault install --global
+```
+
+For each detected harness this writes a user-level stdio MCP registration and the memory ritual in its global rules file — Claude Code (`~/.claude.json` + `~/.claude/CLAUDE.md`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), and DeepSeek Harness (`~/.dsh/AGENTS.md` + a stdio mount in every profile's `cordis.patch.yml`). After that, every session in every repository gets the vault with no per-repo setup: the harness spawns `memory-vault stdio` in the session's directory, and the server derives the project space from that directory automatically (the nearest `.git`, else the shallowest package manifest; no marker means the `default` space). Detected spaces are recorded in `~/.memory-vault-connections.json` so they stay stable.
+
+```sh
+npx -y memory-vault install --global --dry-run        # preview changes
+npx -y memory-vault install --global --store <dir>    # choose the store (default ~/.memory-vault)
+npx -y memory-vault uninstall --global                # undo exactly what install wrote
+```
+
+Restart your sessions after installing. Per-repo `install` (below) remains for team-shared, committed configs or a custom space name.
 
 ## Install into a repository
 

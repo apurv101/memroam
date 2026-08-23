@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 // Memory Vault — Claude-style memory primitives over a local folder, via MCP.
 //
-//   node server.mjs                (or: npm start) — serve the vault
+//   npx memory-vault install --global — wire every harness on this machine to
+//                                    the vault once, user-globally: a stdio MCP
+//                                    registration per harness plus the memory
+//                                    ritual in its global rules file. Sessions
+//                                    then get vault tools in every repo with no
+//                                    per-repo setup; the stdio server derives
+//                                    the project space from its working
+//                                    directory automatically.
+//   npx memory-vault stdio         — MCP over stdin/stdout (what the global
+//                                    registrations run; spawned by the harness
+//                                    in the session's directory)
+//   node server.mjs                (or: npm start) — serve the vault over HTTP
 //   npx memory-vault install       — wire the current repo to the vault
 //                                    (starts the server if down, lets you pick
 //                                    harnesses, writes each one's MCP config +
 //                                    the shared rules files; alias: connect)
-//   npx memory-vault uninstall     — undo install for the repo; memories are
-//                                    never touched (alias: disconnect)
+//   npx memory-vault uninstall     — undo install for the repo (--global: undo
+//                                    install --global); memories are never
+//                                    touched (alias: disconnect)
 //
 // The store is a plain directory of markdown files (default ./memory), one
 // subdirectory per project plus an org-wide shared/ space, each with its own
@@ -38,21 +50,29 @@ import {
   rmdir,
   stat,
 } from "node:fs/promises";
-import { openSync } from "node:fs";
+import { existsSync, openSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
+let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
 const PORT = Number(process.env.VAULT_PORT ?? 8787);
+
+// Several processes can share the store (stdio instances, the HTTP server),
+// so every write lands via temp-file + rename — a reader never sees a torn file.
+async function atomicWrite(path, data) {
+  const tmp = `${path}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  await writeFile(tmp, data);
+  await fsRename(tmp, path);
+}
 
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_INFO = { name: "memory-vault", version: "0.3.1" };
 
 const instructionsFor = (scope) =>
   scope
-    ? `You have a persistent memory directory for the project "${scope}". MEMORY.md at its root is this project's index — view it before starting work, and read any memory file it points to that looks relevant.
+    ? `You have a persistent memory vault. This session's project space is "${scope}" — relative paths read and write there. MEMORY.md at its root is this project's index — view it before starting work, and read any memory file it points to that looks relevant. The whole vault is visible: other projects' spaces can be addressed by path ("<space>/<file>"), and the root listing shows every space.
 
 Each memory is one markdown file holding one fact, with frontmatter (name: kebab-case slug, description: one-line summary), stored at the root of the directory. After writing a memory file, add or update its one-line pointer in MEMORY.md ("- [name](file.md) — hook"). Before saving, check whether an existing file already covers it — update that file rather than creating a duplicate; delete memories that turn out to be wrong, and remove their index line.
 
@@ -70,28 +90,48 @@ Store durable facts, corrections, lessons, and decisions — things that should 
 class ToolError extends Error {}
 
 const scopeDir = (scope) => join(MEMORY_DIR, scope);
-const SHARED_DIR = join(MEMORY_DIR, "shared");
+let SHARED_DIR = join(MEMORY_DIR, "shared");
+
+// stdio mode resolves its store at startup (env → registry → ~/.memory-vault)
+// rather than trusting the ./memory default, which is only right for `serve`
+// run from the vault repo itself.
+function setMemoryDir(dir) {
+  MEMORY_DIR = resolve(dir);
+  SHARED_DIR = join(MEMORY_DIR, "shared");
+}
 const under = (abs, root) => abs === root || abs.startsWith(root + sep);
 
+// Scope is a routing default, not a wall (AJ's decision, 2026-08-22: every
+// session sees the whole vault, no matter which directory the harness was
+// opened in). Relative paths land in the session's own space; a path whose
+// first segment names another space (or that already exists from the root)
+// addresses that space directly. The only rejected paths are ones escaping
+// the memory directory itself.
 function resolvePath(p, scope) {
   if (typeof p !== "string" || !p.trim()) throw new ToolError("path is required");
   // Tolerate "/memories/foo.md" and "memories/foo.md" spellings.
   const cleaned = p.trim().replace(/^\/?(memories\/)?/, "");
-  // In a project scope, "shared/…" is carved out to the vault-level shared space.
-  const inShared = scope && (cleaned === "shared" || cleaned.startsWith("shared/"));
-  const abs = resolve(scope && !inShared ? scopeDir(scope) : MEMORY_DIR, cleaned);
-  const roots = scope ? [scopeDir(scope), SHARED_DIR] : [MEMORY_DIR];
-  if (!roots.some((root) => under(abs, root))) {
+  let abs;
+  if (!scope) {
+    abs = resolve(MEMORY_DIR, cleaned);
+  } else {
+    const fromScope = resolve(scopeDir(scope), cleaned);
+    const fromRoot = resolve(MEMORY_DIR, cleaned);
+    const firstSegment = cleaned.split("/")[0];
+    const namesSpace =
+      firstSegment && firstSegment !== "." && existsSync(join(MEMORY_DIR, firstSegment)) && !existsSync(fromScope);
+    if (existsSync(fromScope)) abs = fromScope;
+    else if (existsSync(fromRoot) || namesSpace) abs = fromRoot;
+    else abs = fromScope;
+  }
+  if (!under(abs, MEMORY_DIR)) {
     throw new ToolError(`path escapes the memory directory: ${p}`);
   }
   return abs;
 }
 
 function rel(abs, scope) {
-  if (scope) {
-    if (under(abs, SHARED_DIR)) return join("shared", relative(SHARED_DIR, abs));
-    return relative(scopeDir(scope), abs) || ".";
-  }
+  if (scope && under(abs, scopeDir(scope))) return relative(scopeDir(scope), abs) || ".";
   return relative(MEMORY_DIR, abs) || ".";
 }
 
@@ -194,6 +234,17 @@ async function callTool(name, args, scope) {
           .filter((e) => !e.name.startsWith("."))
           .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
           .sort();
+        // A scoped session's root listing also shows the rest of the vault —
+        // every space is visible; this one is just the write default.
+        if (scope && abs === scopeDir(scope)) {
+          const top = await readdir(MEMORY_DIR, { withFileTypes: true }).catch(() => []);
+          const others = top
+            .filter((e) => e.isDirectory() && e.name !== scope && !e.name.startsWith("."))
+            .map((e) => `${e.name}/  (other space)`)
+            .sort();
+          const own = lines.join("\n") || "(no memories in this space yet)";
+          return `Directory: . (space "${scope}")\n${own}${others.length ? `\n${others.join("\n")}` : ""}`;
+        }
         return `Directory: ${rel(abs, scope)}\n${lines.join("\n") || "(empty)"}`;
       }
       const lines = (await readFile(abs, "utf8")).split("\n");
@@ -210,7 +261,7 @@ async function callTool(name, args, scope) {
       const abs = resolvePath(args.path, scope);
       if (typeof args.file_text !== "string") throw new ToolError("file_text is required");
       await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, args.file_text);
+      await atomicWrite(abs, args.file_text);
       return `Created ${rel(abs, scope)}`;
     }
 
@@ -226,7 +277,7 @@ async function callTool(name, args, scope) {
       const count = text.split(oldStr).length - 1;
       if (count === 0) throw new ToolError("old_str not found in file");
       if (count > 1) throw new ToolError(`old_str occurs ${count} times — must be unique`);
-      await writeFile(abs, text.replace(oldStr, newStr));
+      await atomicWrite(abs, text.replace(oldStr, newStr));
       return `Edited ${rel(abs, scope)}`;
     }
 
@@ -241,14 +292,14 @@ async function callTool(name, args, scope) {
         throw new ToolError(`insert_line must be between 0 and ${lines.length}`);
       }
       lines.splice(at, 0, String(args.insert_text ?? ""));
-      await writeFile(abs, lines.join("\n"));
+      await atomicWrite(abs, lines.join("\n"));
       return `Inserted into ${rel(abs, scope)} after line ${at}`;
     }
 
     case "delete": {
       const abs = resolvePath(args.path, scope);
-      if (abs === MEMORY_DIR || (scope && (abs === scopeDir(scope) || abs === SHARED_DIR))) {
-        throw new ToolError("refusing to delete the memory root");
+      if (abs === MEMORY_DIR || dirname(abs) === MEMORY_DIR) {
+        throw new ToolError("refusing to delete the memory root or a space root");
       }
       const st = await stat(abs).catch(() => null);
       if (!st) throw new ToolError(`not found: ${args.path}`);
@@ -279,7 +330,7 @@ class JsonRpcError extends Error {
   }
 }
 
-async function dispatch(method, params, scope) {
+async function dispatch(method, params, scope, scopeNote) {
   switch (method) {
     case "initialize":
       return {
@@ -288,7 +339,7 @@ async function dispatch(method, params, scope) {
           : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
-        instructions: instructionsFor(scope),
+        instructions: scopeNote ? `${instructionsFor(scope)}\n\n${scopeNote}` : instructionsFor(scope),
       };
     case "ping":
       return {};
@@ -391,6 +442,63 @@ const MARK_BEGIN = "<!-- memory-vault:begin -->";
 const MARK_END = "<!-- memory-vault:end -->";
 const MARKED_SECTION = `${MARK_BEGIN}\n${MEMORY_SECTION}${MARK_END}\n`;
 
+// The user-global ritual differs from the repo one: no fixed project name
+// (stdio scopes each session automatically) and it points at per-repo install
+// only as the opt-out for a custom space name.
+const GLOBAL_MEMORY_SECTION = `## Memory
+
+A memory-vault MCP server (\`vault\`) provides persistent cross-session memory; when its tools are available, prefer them over any built-in auto-memory. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere. At session start, view \`MEMORY.md\` with the vault tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`. Before finishing, save durable facts, corrections, lessons, and decisions — one markdown file per fact with \`name:\`/\`description:\` frontmatter — and add or update its line in \`MEMORY.md\`. Check whether an existing memory already covers it before creating a new one; delete memories that turn out to be wrong. Don't store what the repo or chat history already records.
+`;
+const GLOBAL_MARKED_SECTION = `${MARK_BEGIN}\n${GLOBAL_MEMORY_SECTION}${MARK_END}\n`;
+
+// Cursor has no writable always-on rules file, but it loads personal skills
+// from ~/.cursor/skills/ — so the ritual ships as a skill with a broad
+// trigger description. On-demand, not guaranteed-injected; the report still
+// points at Settings → Rules for the always-on variant.
+const CURSOR_RITUAL_SKILL = `---
+name: memory-vault
+description: >-
+  Persistent cross-session memory via the vault MCP server. Use at the start
+  of any coding task to recall project memory and context from previous
+  sessions, whenever the user mentions remembering, memory, or past
+  decisions, and before finishing work to save durable facts, corrections,
+  lessons, and decisions.
+---
+# Memory Vault
+
+A memory-vault MCP server (\`vault\`) provides persistent cross-session memory shared across coding agents. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere.
+
+At the start of a task: view \`MEMORY.md\` with the vault tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`.
+
+Before finishing: save durable facts, corrections, lessons, and decisions — one markdown file per fact with \`name:\`/\`description:\` frontmatter — and add or update its line in \`MEMORY.md\`. Check whether an existing memory already covers it before creating a new one; delete memories that turn out to be wrong. Don't store what the repo or chat history already records.
+`;
+
+// Append the global ritual to one harness's user-global rules file. The file's
+// parent directory must already exist (the caller detects the harness first);
+// a file that already mentions the vault is left alone.
+async function upsertGlobalRules(path, dryRun) {
+  const raw = await readFile(path, "utf8").catch(() => null);
+  if (raw !== null && /vault/i.test(raw)) return "unchanged (already mentions the vault)";
+  if (!dryRun) await writeFile(path, raw === null ? GLOBAL_MARKED_SECTION : `${raw.trimEnd()}\n\n${GLOBAL_MARKED_SECTION}`);
+  return raw === null ? "created with the memory section" : "memory section appended";
+}
+
+async function removeGlobalRules(path, dryRun) {
+  const raw = await readFile(path, "utf8").catch(() => null);
+  if (raw === null) return "not present";
+  const marked = /(?:^|\n)<!-- memory-vault:begin -->\n[\s\S]*?<!-- memory-vault:end -->\n?/;
+  if (!marked.test(raw)) {
+    return /vault/i.test(raw) ? "mentions the vault but not the managed section — edit by hand" : "no memory section";
+  }
+  const cleaned = raw.replace(marked, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (cleaned === "") {
+    if (!dryRun) await rm(path);
+    return "deleted (only held the memory section)";
+  }
+  if (!dryRun) await writeFile(path, cleaned + "\n");
+  return "memory section removed";
+}
+
 const projectSlug = (name) =>
   name
     .toLowerCase()
@@ -398,22 +506,72 @@ const projectSlug = (name) =>
     .replace(/^[^a-z0-9]+/, "")
     .slice(0, 64);
 
-// Machine-level record of which repos ran install — advisory, not
-// authoritative (repos move and vanish), so readers treat entries as hints.
-// Lives outside the store: it describes this machine's wiring, not memories.
+// Machine-level record of this machine's wiring — advisory, not authoritative
+// (repos move and vanish), so readers treat entries as hints. Lives outside
+// the store: it describes wiring, not memories. Fields: connections (repos
+// that ran per-repo install), store (the store path recorded by install
+// --global, so stdio instances find it without env), spaces (project root →
+// space name, written by stdio auto-detection so renames and basename
+// collisions stay stable), global (what install --global wired).
 const CONNECTIONS_PATH = join(homedir(), ".memory-vault-connections.json");
 
-async function readConnections() {
+async function readRegistry() {
   try {
     const parsed = JSON.parse(await readFile(CONNECTIONS_PATH, "utf8"));
-    return Array.isArray(parsed.connections) ? parsed.connections : [];
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
+async function writeRegistry(registry) {
+  await atomicWrite(CONNECTIONS_PATH, JSON.stringify(registry, null, 2) + "\n");
+}
+
+async function readConnections() {
+  const registry = await readRegistry();
+  return Array.isArray(registry.connections) ? registry.connections : [];
+}
+
 async function writeConnections(connections) {
-  await writeFile(CONNECTIONS_PATH, JSON.stringify({ connections }, null, 2) + "\n");
+  const registry = await readRegistry();
+  registry.connections = connections;
+  await writeRegistry(registry);
+}
+
+// ── stdio scope detection ─────────────────────────────────────────────────────
+//
+// A stdio instance is spawned by the harness in the session's directory, so
+// the working directory is the one signal that identifies the project — walk
+// up to the first .git (or, failing that, the shallowest package manifest)
+// and name the space after that directory.
+
+async function findProjectRoot(cwd) {
+  let dir = resolve(cwd);
+  let manifestRoot = null;
+  while (true) {
+    if (await exists(join(dir, ".git"))) return dir;
+    if (await exists(join(dir, "package.json")) || (await exists(join(dir, "pyproject.toml")))) manifestRoot = dir;
+    const parent = dirname(dir);
+    if (parent === dir) return manifestRoot;
+    dir = parent;
+  }
+}
+
+async function resolveSpace(cwd) {
+  const root = await findProjectRoot(cwd);
+  if (root === null) return "default";
+  const registry = await readRegistry();
+  registry.spaces ??= {};
+  if (typeof registry.spaces[root] === "string") return registry.spaces[root];
+  // "shared" is the org-wide space; a project that happens to carry that name
+  // must not scope onto it.
+  const taken = new Set(["shared", ...Object.values(registry.spaces)]);
+  let space = projectSlug(basename(root)) || "default";
+  for (let i = 2; taken.has(space); i++) space = `${projectSlug(basename(root))}-${i}`;
+  registry.spaces[root] = space;
+  await writeRegistry(registry);
+  return space;
 }
 
 async function serverUp() {
@@ -469,6 +627,48 @@ async function removeMcpJson(path, dryRun) {
   return empty ? "deleted (only held the vault entry)" : "vault entry removed";
 }
 
+// opencode's config nests servers under "mcp" (not "mcpServers"), so it gets
+// its own merge/remove pair with the same created/updated/unchanged contract.
+async function mergeOpencodeMcp(path, entry, dryRun) {
+  const raw = await readFile(path, "utf8").catch(() => null);
+  let config = {};
+  if (raw !== null) {
+    try {
+      config = JSON.parse(raw);
+    } catch {
+      throw new Error(`${path} is not valid JSON — fix it or add the vault entry by hand`);
+    }
+  }
+  config.mcp ??= {};
+  if (JSON.stringify(config.mcp.vault) === JSON.stringify(entry)) return "unchanged";
+  const status = raw === null ? "created" : "updated";
+  config.mcp.vault = entry;
+  if (!dryRun) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(config, null, 2) + "\n");
+  }
+  return status;
+}
+
+async function removeOpencodeMcp(path, dryRun) {
+  const raw = await readFile(path, "utf8").catch(() => null);
+  if (raw === null) return "not present";
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch {
+    return "not valid JSON — remove the vault entry by hand";
+  }
+  if (!config.mcp?.vault) return "no vault entry";
+  delete config.mcp.vault;
+  const empty = Object.keys(config).every((k) => k === "mcp" || k === "$schema") && Object.keys(config.mcp).length === 0;
+  if (!dryRun) {
+    if (empty) await rm(path);
+    else await writeFile(path, JSON.stringify(config, null, 2) + "\n");
+  }
+  return empty ? "deleted (only held the vault entry)" : "vault entry removed";
+}
+
 // ── harness registry ──────────────────────────────────────────────────────────
 //
 // Each harness owns three hooks: detect (is it on this machine / in this
@@ -492,6 +692,23 @@ const HARNESSES = [
     async uninstall({ cwd, dryRun }) {
       return [`claude   .mcp.json ${await removeMcpJson(join(cwd, ".mcp.json"), dryRun)}`];
     },
+    // User scope: ~/.claude.json holds user-level MCP servers (what
+    // `claude mcp add --scope user` writes); the ritual goes in the global
+    // ~/.claude/CLAUDE.md, the one file injected into every session.
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".claude")))) return ["claude   ~/.claude not found — skipped"];
+      const entry = { type: "stdio", command, args, env: { MEMORY_DIR: store } };
+      const status = await mergeMcpJson(join(homedir(), ".claude.json"), entry, dryRun);
+      const rules = await upsertGlobalRules(join(homedir(), ".claude", "CLAUDE.md"), dryRun);
+      return [`claude   ~/.claude.json ${status} (user scope, stdio)`, `claude   ~/.claude/CLAUDE.md ${rules}`];
+    },
+    async globalUninstall({ dryRun }) {
+      if (!(await exists(join(homedir(), ".claude")))) return ["claude   ~/.claude not found — skipped"];
+      return [
+        `claude   ~/.claude.json ${await removeMcpJson(join(homedir(), ".claude.json"), dryRun)}`,
+        `claude   ~/.claude/CLAUDE.md ${await removeGlobalRules(join(homedir(), ".claude", "CLAUDE.md"), dryRun)}`,
+      ];
+    },
   },
   {
     key: "cursor",
@@ -506,6 +723,39 @@ const HARNESSES = [
       const status = await removeMcpJson(join(cwd, ".cursor", "mcp.json"), dryRun);
       if (!dryRun && status.startsWith("deleted")) await rmdir(join(cwd, ".cursor")).catch(() => {});
       return [`cursor   .cursor/mcp.json ${status}`];
+    },
+    // ~/.cursor/mcp.json is Cursor's global MCP config. User-level rules live
+    // in app settings (no file), so the always-on ritual is a manual paste —
+    // but Cursor loads personal skills from ~/.cursor/skills/, so the ritual
+    // also ships as a skill there: on-demand rather than guaranteed-injected,
+    // and fully installable/removable by us.
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".cursor")))) return ["cursor   ~/.cursor not found — skipped"];
+      const entry = { command, args, env: { MEMORY_DIR: store } };
+      const status = await mergeMcpJson(join(homedir(), ".cursor", "mcp.json"), entry, dryRun);
+      const skillPath = join(homedir(), ".cursor", "skills", "memory-vault", "SKILL.md");
+      const skillExists = await exists(skillPath);
+      if (!dryRun && !skillExists) {
+        await mkdir(dirname(skillPath), { recursive: true });
+        await writeFile(skillPath, CURSOR_RITUAL_SKILL);
+      }
+      return [
+        `cursor   ~/.cursor/mcp.json ${status} (global, stdio)`,
+        `cursor   ~/.cursor/skills/memory-vault ${skillExists ? "unchanged" : "created"} (ritual as a personal skill)`,
+        "cursor   for always-on recall, also paste the ritual under Settings → Rules (app-managed, not writable)",
+      ];
+    },
+    async globalUninstall({ dryRun }) {
+      if (!(await exists(join(homedir(), ".cursor")))) return ["cursor   ~/.cursor not found — skipped"];
+      const lines = [`cursor   ~/.cursor/mcp.json ${await removeMcpJson(join(homedir(), ".cursor", "mcp.json"), dryRun)}`];
+      const skillDir = join(homedir(), ".cursor", "skills", "memory-vault");
+      if (await exists(skillDir)) {
+        if (!dryRun) await rm(skillDir, { recursive: true });
+        lines.push("cursor   ~/.cursor/skills/memory-vault removed");
+      } else {
+        lines.push("cursor   ~/.cursor/skills/memory-vault not present");
+      }
+      return lines;
     },
   },
   {
@@ -536,7 +786,10 @@ const HARNESSES = [
       const toml = await readFile(tomlPath, "utf8").catch(() => null);
       if (toml === null) return ["codex    .codex/config.toml not present"];
       if (!toml.includes("[mcp_servers.vault]")) return ["codex    .codex/config.toml no vault entry"];
-      const cleaned = toml.replace(/(?:^|\n)\[mcp_servers\.vault\]\n(?:(?!\[).*(?:\n|$))*/, "\n").replace(/^\n+/, "");
+      // Also strip [mcp_servers.vault.*] sub-tables (per-tool approval modes).
+      // Multiline ^ so consecutive blocks match — a match consumes the newline
+      // the next block would otherwise need as its (?:^|\n) anchor.
+      const cleaned = toml.replace(/^\[mcp_servers\.vault(?:\.[^\]]+)?\]\n(?:(?!\[).*(?:\n|$))*/gm, "").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
       if (cleaned.trim() === "") {
         if (!dryRun) {
           await rm(tomlPath);
@@ -546,6 +799,39 @@ const HARNESSES = [
       }
       if (!dryRun) await writeFile(tomlPath, cleaned.trimEnd() + "\n");
       return ["codex    .codex/config.toml vault entry removed"];
+    },
+    // ~/.codex/config.toml is Codex's global config; ~/.codex/AGENTS.md its
+    // global instructions file. TOML is appended, not parsed (same policy as
+    // the repo-level entry).
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".codex")))) return ["codex    ~/.codex not found — skipped"];
+      const lines = [];
+      const tomlPath = join(homedir(), ".codex", "config.toml");
+      const toml = await readFile(tomlPath, "utf8").catch(() => null);
+      if (toml === null || !toml.includes("[mcp_servers.vault]")) {
+        const block = `[mcp_servers.vault]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\nenv = { MEMORY_DIR = ${JSON.stringify(store)} }\n`;
+        if (!dryRun) await writeFile(tomlPath, `${toml?.trimEnd() ? toml.trimEnd() + "\n\n" : ""}${block}`);
+        lines.push(`codex    ~/.codex/config.toml ${toml === null ? "created" : "updated"} (global, stdio)`);
+      } else {
+        lines.push("codex    ~/.codex/config.toml already has a vault entry — left as is");
+      }
+      lines.push(`codex    ~/.codex/AGENTS.md ${await upsertGlobalRules(join(homedir(), ".codex", "AGENTS.md"), dryRun)}`);
+      return lines;
+    },
+    async globalUninstall({ dryRun }) {
+      if (!(await exists(join(homedir(), ".codex")))) return ["codex    ~/.codex not found — skipped"];
+      const lines = [];
+      const tomlPath = join(homedir(), ".codex", "config.toml");
+      const toml = await readFile(tomlPath, "utf8").catch(() => null);
+      if (toml === null) lines.push("codex    ~/.codex/config.toml not present");
+      else if (!toml.includes("[mcp_servers.vault")) lines.push("codex    ~/.codex/config.toml no vault entry");
+      else {
+        const cleaned = toml.replace(/^\[mcp_servers\.vault(?:\.[^\]]+)?\]\n(?:(?!\[).*(?:\n|$))*/gm, "").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
+        if (!dryRun) await writeFile(tomlPath, cleaned.trimEnd() + "\n");
+        lines.push("codex    ~/.codex/config.toml vault entry removed");
+      }
+      lines.push(`codex    ~/.codex/AGENTS.md ${await removeGlobalRules(join(homedir(), ".codex", "AGENTS.md"), dryRun)}`);
+      return lines;
     },
   },
   {
@@ -558,7 +844,9 @@ const HARNESSES = [
       // auto-loaded config, so the patch is applied per-session via --patch (or
       // copied into a profile to make it permanent — the file header says how).
       const patchPath = join(cwd, "dsh-cordis.patch.yml");
-      const patchEntry = `- id: mcp-vault\n  name: '@deepseek-ai/dsh-mcp-client'\n  config:\n    serverName: vault\n    transport: streamable-http\n    url: ${url}\n`;
+      // New plugins are added via `- insert:`; a bare `- id:` entry only
+      // overrides an existing one and is silently skipped otherwise.
+      const patchEntry = `- insert:\n    - id: mcp-vault\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: vault\n        transport: streamable-http\n        url: ${url}\n`;
       const patchContent = `# dsh Cordis patch — load the memory-vault MCP server (project "${project}").\n# Per-session:  dsh --patch ./dsh-cordis.patch.yml [--profile <name>] ["your task"]\n# Permanent:    copy the entry below into ~/.dsh/profiles/<name>/cordis.patch.yml\n# The vault server must be running (npx memory-vault install starts it if down).\n${patchEntry}`;
       const patch = await readFile(patchPath, "utf8").catch(() => null);
       if (patch === patchContent || (patch !== null && patch.includes("id: mcp-vault") && patch.includes(`url: ${url}`))) {
@@ -579,7 +867,9 @@ const HARNESSES = [
       const patch = await readFile(patchPath, "utf8").catch(() => null);
       if (patch === null) return ["dsh      dsh-cordis.patch.yml not present"];
       if (!patch.includes("id: mcp-vault")) return ["dsh      dsh-cordis.patch.yml no vault entry"];
-      const cleaned = patch.replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/, "\n");
+      const cleaned = patch
+        .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
+        .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
       const onlyComments = cleaned.split("\n").every((l) => l.trim() === "" || l.trim().startsWith("#"));
       if (onlyComments) {
         if (!dryRun) await rm(patchPath);
@@ -588,8 +878,142 @@ const HARNESSES = [
       if (!dryRun) await writeFile(patchPath, cleaned.trimEnd() + "\n");
       return ["dsh      dsh-cordis.patch.yml vault entry removed"];
     },
+    // Global dsh wiring: the ritual goes in ~/.dsh/AGENTS.md (loaded above
+    // profiles, whatever profile boots), and a stdio mount is fanned into
+    // every profile's cordis.patch.yml — profiles don't inherit from any
+    // shared plugin layer, so each one needs its own entry. cwd is left
+    // unset: dsh-mcp-client then spawns the server in the dsh host's cwd,
+    // which is the workspace for headless runs (the web UI host may start
+    // elsewhere — those sessions land in the space of wherever it started).
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".dsh")))) return ["dsh      ~/.dsh not found — skipped"];
+      const lines = [`dsh      ~/.dsh/AGENTS.md ${await upsertGlobalRules(join(homedir(), ".dsh", "AGENTS.md"), dryRun)}`];
+      // dsh patch semantics: a bare `- id:` entry OVERRIDES an existing entry
+      // (and warns + skips when none exists); NEW plugins must be added via an
+      // `- insert:` block.
+      const entry =
+        `- insert:\n    - id: mcp-vault\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: vault\n        transport: stdio\n` +
+        `        command: ${JSON.stringify(command)}\n        args: ${JSON.stringify(args)}\n        env:\n          MEMORY_DIR: ${JSON.stringify(store)}\n`;
+      for (const profile of await dshProfiles()) {
+        const patchPath = join(homedir(), ".dsh", "profiles", profile, "cordis.patch.yml");
+        const patch = await readFile(patchPath, "utf8").catch(() => null);
+        if (patch !== null && patch.includes("id: mcp-vault")) {
+          lines.push(`dsh      profiles/${profile} already has a vault entry — left as is`);
+        } else {
+          if (!dryRun) await writeFile(patchPath, `${patch === null ? "" : patch.trimEnd() + "\n\n"}${entry}`);
+          lines.push(`dsh      profiles/${profile}/cordis.patch.yml ${patch === null ? "created" : "updated"} (stdio mount)`);
+        }
+      }
+      return lines;
+    },
+    async globalUninstall({ dryRun }) {
+      if (!(await exists(join(homedir(), ".dsh")))) return ["dsh      ~/.dsh not found — skipped"];
+      const lines = [`dsh      ~/.dsh/AGENTS.md ${await removeGlobalRules(join(homedir(), ".dsh", "AGENTS.md"), dryRun)}`];
+      for (const profile of await dshProfiles()) {
+        const patchPath = join(homedir(), ".dsh", "profiles", profile, "cordis.patch.yml");
+        const patch = await readFile(patchPath, "utf8").catch(() => null);
+        if (patch === null || !patch.includes("id: mcp-vault")) {
+          lines.push(`dsh      profiles/${profile} no vault entry`);
+          continue;
+        }
+        // Remove the insert-wrapped shape (ours only ever holds the vault
+        // entry) and the legacy bare-id shape from older installs.
+        const cleaned = patch
+          .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
+          .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
+        if (!dryRun) await writeFile(patchPath, cleaned.trimEnd() + "\n");
+        lines.push(`dsh      profiles/${profile} vault entry removed`);
+      }
+      return lines;
+    },
+  },
+  {
+    key: "opencode",
+    title: "opencode",
+    where: "opencode.json",
+    detect: async (cwd) =>
+      (await exists(join(homedir(), ".opencode"))) ||
+      (await exists(join(homedir(), ".config", "opencode"))) ||
+      exists(join(cwd, "opencode.json")),
+    // Repo level: opencode reads a project opencode.json; the HTTP server is
+    // addressed as a "remote" MCP entry.
+    async install({ cwd, url, dryRun }) {
+      const status = await mergeOpencodeMcp(join(cwd, "opencode.json"), { type: "remote", url, enabled: true }, dryRun);
+      return [`opencode opencode.json ${status} (vault → ${url})`];
+    },
+    async uninstall({ cwd, dryRun }) {
+      return [`opencode opencode.json ${await removeOpencodeMcp(join(cwd, "opencode.json"), dryRun)}`];
+    },
+    // Global: ~/.config/opencode/opencode.json ("local" = stdio, command is a
+    // single array) + the global rules file ~/.config/opencode/AGENTS.md.
+    // opencode also falls back to ~/.claude/CLAUDE.md when its own global
+    // rules file is absent, so writing ours must carry the full ritual.
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".opencode"))) && !(await exists(join(homedir(), ".config", "opencode")))) {
+        return ["opencode ~/.opencode not found — skipped"];
+      }
+      const configDir = join(homedir(), ".config", "opencode");
+      const entry = { type: "local", command: [command, ...args], enabled: true, environment: { MEMORY_DIR: store } };
+      const status = await mergeOpencodeMcp(join(configDir, "opencode.json"), entry, dryRun);
+      if (!dryRun) await mkdir(configDir, { recursive: true });
+      const rules = dryRun && !(await exists(configDir)) ? "would create with the memory section" : await upsertGlobalRules(join(configDir, "AGENTS.md"), dryRun);
+      return [`opencode ~/.config/opencode/opencode.json ${status} (global, stdio)`, `opencode ~/.config/opencode/AGENTS.md ${rules}`];
+    },
+    async globalUninstall({ dryRun }) {
+      const configDir = join(homedir(), ".config", "opencode");
+      if (!(await exists(configDir))) return ["opencode ~/.config/opencode not found — skipped"];
+      return [
+        `opencode ~/.config/opencode/opencode.json ${await removeOpencodeMcp(join(configDir, "opencode.json"), dryRun)}`,
+        `opencode ~/.config/opencode/AGENTS.md ${await removeGlobalRules(join(configDir, "AGENTS.md"), dryRun)}`,
+      ];
+    },
+  },
+  {
+    key: "gemini",
+    title: "Gemini CLI",
+    where: ".gemini/settings.json",
+    detect: async (cwd) => (await exists(join(homedir(), ".gemini"))) || exists(join(cwd, ".gemini")),
+    // Same "mcpServers" key as Claude's configs, so mergeMcpJson applies;
+    // repo level addresses the HTTP server via Gemini's httpUrl field.
+    async install({ cwd, url, dryRun }) {
+      const status = await mergeMcpJson(join(cwd, ".gemini", "settings.json"), { httpUrl: url }, dryRun);
+      return [`gemini   .gemini/settings.json ${status} (vault → ${url})`];
+    },
+    async uninstall({ cwd, dryRun }) {
+      const status = await removeMcpJson(join(cwd, ".gemini", "settings.json"), dryRun);
+      if (!dryRun && status.startsWith("deleted")) await rmdir(join(cwd, ".gemini")).catch(() => {});
+      return [`gemini   .gemini/settings.json ${status}`];
+    },
+    // Global: ~/.gemini/settings.json (stdio: command/args/env) + the global
+    // context file ~/.gemini/GEMINI.md.
+    async globalInstall({ store, command, args, dryRun }) {
+      if (!(await exists(join(homedir(), ".gemini")))) return ["gemini   ~/.gemini not found — skipped"];
+      const entry = { command, args, env: { MEMORY_DIR: store } };
+      const status = await mergeMcpJson(join(homedir(), ".gemini", "settings.json"), entry, dryRun);
+      const rules = await upsertGlobalRules(join(homedir(), ".gemini", "GEMINI.md"), dryRun);
+      return [`gemini   ~/.gemini/settings.json ${status} (global, stdio)`, `gemini   ~/.gemini/GEMINI.md ${rules}`];
+    },
+    async globalUninstall({ dryRun }) {
+      if (!(await exists(join(homedir(), ".gemini")))) return ["gemini   ~/.gemini not found — skipped"];
+      return [
+        `gemini   ~/.gemini/settings.json ${await removeMcpJson(join(homedir(), ".gemini", "settings.json"), dryRun)}`,
+        `gemini   ~/.gemini/GEMINI.md ${await removeGlobalRules(join(homedir(), ".gemini", "GEMINI.md"), dryRun)}`,
+      ];
+    },
   },
 ];
+
+// Profile directories under ~/.dsh/profiles that are real profiles (they
+// carry a cordis.yml) — node_modules and stray files are skipped.
+async function dshProfiles() {
+  const root = join(homedir(), ".dsh", "profiles");
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const profiles = [];
+  for (const e of entries) {
+    if (e.isDirectory() && (await exists(join(root, e.name, "cordis.yml")))) profiles.push(e.name);
+  }
+  return profiles.sort();
+}
 
 // The ritual. AGENTS.md carries it (Codex, Cursor, and the growing
 // cross-harness convention); CLAUDE.md imports it via @AGENTS.md so the
@@ -809,6 +1233,132 @@ async function uninstall(argv) {
   );
 }
 
+// ── global install — wire every harness on this machine, once ────────────────
+//
+// One stdio MCP registration per harness at its user-global level, plus the
+// memory ritual in its global rules file. No per-repo setup after this: each
+// session's stdio instance detects the project space from its own cwd.
+
+// The command the harness registrations should run. A local checkout (or a
+// dev clone) is addressed directly so the registration keeps working — and
+// keeps testing the working copy; an npx/npm-installed copy lives in a cache
+// or global tree that may move, so registrations go through npx instead.
+function stdioLaunch() {
+  return SELF.includes(`${sep}node_modules${sep}`)
+    ? { command: "npx", args: ["-y", "memory-vault", "stdio"] }
+    : { command: process.execPath, args: [SELF, "stdio"] };
+}
+
+async function installGlobal(argv) {
+  let dryRun = false;
+  let storeFlag = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--dry-run") dryRun = true;
+    else if (argv[i] === "--store") storeFlag = argv[++i];
+    else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault install --global [--store <dir>] [--dry-run])`);
+  }
+  const registry = await readRegistry();
+  const store = resolve(storeFlag ?? process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  const { command, args } = stdioLaunch();
+  const ctx = { store, command, args, dryRun };
+  const lines = [`store    ${store}`, `runs     ${command} ${args.join(" ")}`];
+  for (const h of HARNESSES) lines.push(...(await h.globalInstall(ctx)));
+  if (!dryRun) {
+    registry.store = store;
+    registry.global = { installedAt: new Date().toISOString(), command, args };
+    await writeRegistry(registry);
+    lines.push(`registry ${CONNECTIONS_PATH} recorded`);
+  }
+  console.log(`memory-vault install --global${dryRun ? " (dry run)" : ""}\n`);
+  for (const l of lines) console.log(`  ${l}`);
+  console.log("\nRestart your sessions; each one gets the vault tools and lands in its own project space automatically.");
+}
+
+async function uninstallGlobal(argv) {
+  let dryRun = false;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--dry-run") dryRun = true;
+    else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault uninstall --global [--dry-run])`);
+  }
+  const lines = [];
+  for (const h of HARNESSES) lines.push(...(await h.globalUninstall({ dryRun })));
+  const registry = await readRegistry();
+  if (registry.global) {
+    if (!dryRun) {
+      delete registry.global;
+      await writeRegistry(registry);
+    }
+    lines.push("registry global entry removed (store path and space map kept for reinstall)");
+  }
+  console.log(`memory-vault uninstall --global${dryRun ? " (dry run)" : ""}\n`);
+  for (const l of lines) console.log(`  ${l}`);
+  console.log("\nYour memories are untouched.");
+}
+
+// ── stdio transport ───────────────────────────────────────────────────────────
+//
+// MCP over stdin/stdout, newline-delimited JSON-RPC, one scope for the whole
+// process: the harness spawns us in the session's directory, and that cwd
+// names the project space. Nothing but protocol may touch stdout here.
+
+async function stdioServe() {
+  const registry = await readRegistry();
+  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  await mkdir(MEMORY_DIR, { recursive: true });
+  const cwd = process.cwd();
+  const scope = await resolveSpace(cwd);
+  // Sessions in a non-project directory land in the fallback space. Explain
+  // that in the handshake instructions — the session can then tell its user
+  // which folder to open instead of reporting the vault as unreadable.
+  let scopeNote;
+  if (scope === "default") {
+    const entries = await readdir(MEMORY_DIR, { withFileTypes: true }).catch(() => []);
+    const spaces = entries
+      .filter((e) => e.isDirectory() && e.name !== "default" && e.name !== "shared" && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .sort();
+    scopeNote =
+      `Scope note: this session's directory (${cwd}) is not inside a project (no .git or package manifest found), ` +
+      `so relative paths default to the "default" space. The whole vault is still visible: ` +
+      (spaces.length > 0
+        ? `project spaces on this machine are ${spaces.join(", ")} — address them by path ("<space>/MEMORY.md"). ` +
+          `Save project-specific facts in the matching project's space, cross-project facts in shared/.`
+        : `no project spaces exist yet; they are created automatically when a session runs inside a project directory.`);
+  } else {
+    scopeNote = `Scope note: space "${scope}" was auto-detected from ${cwd}; other spaces remain addressable by path.`;
+  }
+  const respond = (id, payload) => process.stdout.write(rpcJson(id, payload) + "\n");
+  process.stdin.setEncoding("utf8");
+  let buffer = "";
+  for await (const chunk of process.stdin) {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line === "") continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        respond(null, { error: { code: -32700, message: "Parse error" } });
+        continue;
+      }
+      if (typeof message !== "object" || message === null || Array.isArray(message)) {
+        respond(null, { error: { code: -32600, message: "Expected a single JSON-RPC message" } });
+        continue;
+      }
+      if (message.id === undefined || message.id === null) continue; // notification
+      try {
+        const result = await dispatch(message.method, message.params, scope, scopeNote);
+        respond(message.id, { result });
+      } catch (err) {
+        respond(message.id, { error: { code: err instanceof JsonRpcError ? err.code : -32603, message: err.message } });
+      }
+    }
+  }
+}
+
 // ── CLI dispatch ──────────────────────────────────────────────────────────────
 
 // status — the three-layer diagnosis: server up? repo wired? and if both,
@@ -840,6 +1390,57 @@ async function status() {
     `  rules    AGENTS.md ${agents === null ? "not present" : /vault/i.test(agents) ? "has the memory section" : "no memory section"}`,
   );
 
+  const registry = await readRegistry();
+  const home = homedir();
+  console.log("\n  global (install --global):");
+  const mcpWired = async (path) => {
+    try {
+      return JSON.parse(await readFile(path, "utf8")).mcpServers?.vault ? "wired" : "present, no vault entry";
+    } catch {
+      return "not present";
+    }
+  };
+  const rulesWired = async (path) => {
+    const raw = await readFile(path, "utf8").catch(() => null);
+    return raw === null ? "not present" : /vault/i.test(raw) ? "has the memory section" : "no memory section";
+  };
+  console.log(`  claude   ~/.claude.json ${await mcpWired(join(home, ".claude.json"))} · CLAUDE.md ${await rulesWired(join(home, ".claude", "CLAUDE.md"))}`);
+  console.log(`  cursor   ~/.cursor/mcp.json ${await mcpWired(join(home, ".cursor", "mcp.json"))}`);
+  const codexToml = await readFile(join(home, ".codex", "config.toml"), "utf8").catch(() => null);
+  console.log(
+    `  codex    ~/.codex/config.toml ${codexToml === null ? "not present" : codexToml.includes("[mcp_servers.vault]") ? "wired" : "present, no vault entry"} · AGENTS.md ${await rulesWired(join(home, ".codex", "AGENTS.md"))}`,
+  );
+  const profiles = await dshProfiles();
+  const dshWired = [];
+  for (const p of profiles) {
+    const patch = await readFile(join(home, ".dsh", "profiles", p, "cordis.patch.yml"), "utf8").catch(() => null);
+    if (patch !== null && patch.includes("id: mcp-vault")) dshWired.push(p);
+  }
+  console.log(
+    `  dsh      profiles wired: ${dshWired.length}/${profiles.length}${profiles.length ? ` (${profiles.map((p) => (dshWired.includes(p) ? p : `${p}✗`)).join(", ")})` : ""} · AGENTS.md ${await rulesWired(join(home, ".dsh", "AGENTS.md"))}`,
+  );
+  const openConfig = await readFile(join(home, ".config", "opencode", "opencode.json"), "utf8").catch(() => null);
+  let openState = "not present";
+  if (openConfig !== null) {
+    try {
+      openState = JSON.parse(openConfig).mcp?.vault ? "wired" : "present, no vault entry";
+    } catch {
+      openState = "not valid JSON";
+    }
+  }
+  console.log(
+    `  opencode ~/.config/opencode/opencode.json ${openState} · AGENTS.md ${await rulesWired(join(home, ".config", "opencode", "AGENTS.md"))}`,
+  );
+  console.log(
+    `  gemini   ~/.gemini/settings.json ${await mcpWired(join(home, ".gemini", "settings.json"))} · GEMINI.md ${await rulesWired(join(home, ".gemini", "GEMINI.md"))}`,
+  );
+  if (registry.store) console.log(`  store    ${registry.store}`);
+  const spaces = Object.entries(registry.spaces ?? {});
+  if (spaces.length > 0) {
+    console.log(`  spaces   (auto-detected by stdio sessions):`);
+    for (const [root, space] of spaces) console.log(`    ${root} → ${space}`);
+  }
+
   const connections = await readConnections();
   if (connections.length === 0) {
     console.log("\n  connected repos: none recorded (installs record here from v0.3.1 on)");
@@ -861,35 +1462,50 @@ async function status() {
 
 const USAGE = `memory-vault — Claude-style memory over a local folder, via MCP
 
-  memory-vault [serve]      serve the vault (MEMORY_DIR, VAULT_PORT)
-  memory-vault install      wire the current repo to the vault: start the
-                            server if down, pick harnesses (interactive in
-                            a terminal), write each one's MCP config and
-                            the shared rules files      (alias: connect)
+  memory-vault install --global
+                            wire every harness on this machine to the vault,
+                            once: a stdio MCP registration per harness plus
+                            the memory ritual in its global rules file. Every
+                            session then gets the vault with no per-repo
+                            setup; the project space is detected from each
+                            session's directory automatically.
+                            [--store <dir>] [--dry-run]
+  memory-vault uninstall --global
+                            undo install --global; memories are never touched
+                            [--dry-run]
+  memory-vault stdio        MCP over stdin/stdout (what the global
+                            registrations run)
+  memory-vault [serve]      serve the vault over HTTP (MEMORY_DIR, VAULT_PORT)
+  memory-vault install      wire only the current repo (team-shared configs,
+                            custom space name)          (alias: connect)
                             [--project <name>] [--harness <keys>] [--yes] [--dry-run]
-  memory-vault uninstall    undo install for this repo: remove the vault
-                            wiring from every harness config and rules
-                            file; memories are never touched
-                                                        (alias: disconnect)
+  memory-vault uninstall    undo install for this repo  (alias: disconnect)
                             [--project <name>] [--dry-run]
-  memory-vault status       show server state, this repo's wiring, and every
-                            repo recorded by install`;
+  memory-vault status       show server state, this repo's wiring, the global
+                            wiring, and every repo recorded by install`;
 
 const cmd = process.argv[2];
+const rest = process.argv.slice(3);
+const isGlobal = rest.includes("--global");
+const restWithoutGlobal = rest.filter((a) => a !== "--global");
 if (cmd === "install" || cmd === "connect") {
   try {
-    await install(process.argv.slice(3));
+    if (isGlobal) await installGlobal(restWithoutGlobal);
+    else await install(rest);
   } catch (err) {
     console.error(`memory-vault install: ${err.message}`);
     process.exit(1);
   }
 } else if (cmd === "uninstall" || cmd === "disconnect") {
   try {
-    await uninstall(process.argv.slice(3));
+    if (isGlobal) await uninstallGlobal(restWithoutGlobal);
+    else await uninstall(rest);
   } catch (err) {
     console.error(`memory-vault uninstall: ${err.message}`);
     process.exit(1);
   }
+} else if (cmd === "stdio") {
+  await stdioServe();
 } else if (cmd === "status") {
   await status();
 } else if (cmd === undefined || cmd === "serve") {
