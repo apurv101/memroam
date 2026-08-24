@@ -155,6 +155,18 @@ function stampId(text) {
   return `---\nid: ${uuidv7()}\n${text.slice(4)}`;
 }
 
+// ── Candidates (S4) ───────────────────────────────────────────────────────────
+//
+// The two-door model: direct instruction-driven saves go straight to a
+// space's root (canonical — today's ritual, unchanged); passive/imported
+// observations land in <space>/candidates/, one file per observation with
+// id:, a capture-time scalar source:, and status: pending|promoted|superseded
+// (adapters write these — see src/adapters/). Candidates are excluded from
+// the generated MEMORY.md (the index scans only the space root) but show up
+// in search, labeled. They are never silently deleted: the gardener marks
+// them promoted/superseded and may archive superseded ones later.
+const isCandidate = (relPath) => relPath.split("/").includes("candidates");
+
 // ── search (S2) ───────────────────────────────────────────────────────────────
 //
 // Grep-tier by design: scan on demand, no index files, no embeddings.
@@ -356,7 +368,8 @@ export async function callTool(name, args, scope) {
       if (hits.length === 0) return `No matches for "${query}" ${where}.`;
       const MAX_RESULTS = 20;
       const rows = hits.slice(0, MAX_RESULTS).map((h) => {
-        const head = `${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
+        const tag = isCandidate(h.path) ? "[candidate] " : "";
+        const head = `${tag}${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
         return h.snippet ? `${head}\n    ${h.snippet}` : head;
       });
       const capNote =
