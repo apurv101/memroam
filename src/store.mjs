@@ -128,7 +128,21 @@ async function reindexFor(...paths) {
 const INDEX_EDIT_ERROR =
   "MEMORY.md is generated from each memory file's frontmatter — it can't be edited directly. Edit the memory file's description: instead; the index regenerates automatically.";
 
-// ── The six memory commands ───────────────────────────────────────────────────
+// ── search (S2) ───────────────────────────────────────────────────────────────
+//
+// Grep-tier by design: scan on demand, no index files, no embeddings.
+// MEMORY.md files are skipped — they are indexes over the same content.
+async function collectMarkdown(dir, out) {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue;
+    const abs = join(dir, e.name);
+    if (e.isDirectory()) await collectMarkdown(abs, out);
+    else if (e.name.endsWith(".md") && e.name !== INDEX_FILE) out.push(abs);
+  }
+}
+
+// ── The memory commands ───────────────────────────────────────────────────
 
 export const TOOLS = [
   {
@@ -146,6 +160,19 @@ export const TOOLS = [
         },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "search",
+    description:
+      "Search memories by keyword across the whole vault — frontmatter and body, all spaces. Returns matching files ranked by relevance with the first matching line. Use this to find memories when you don't know the path; view is for reading known paths.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords to search for (case-insensitive, matched independently)" },
+        space: { type: "string", description: "Optional: restrict the search to one space (e.g. 'shared')" },
+      },
+      required: ["query"],
     },
   },
   {
@@ -248,6 +275,65 @@ export async function callTool(name, args, scope) {
         .slice(start - 1, end)
         .map((l, i) => `${String(start + i).padStart(4)}: ${l}`)
         .join("\n");
+    }
+
+    case "search": {
+      const query = String(args.query ?? "").trim();
+      if (!query) throw new ToolError("query is required");
+      const terms = [...new Set(query.toLowerCase().split(/\s+/))];
+      let root = MEMORY_DIR;
+      if (args.space) {
+        root = resolve(MEMORY_DIR, String(args.space));
+        if (!under(root, MEMORY_DIR)) throw new ToolError(`space escapes the memory directory: ${args.space}`);
+        if (!existsSync(root)) throw new ToolError(`no such space: ${args.space}`);
+      }
+      const files = [];
+      await collectMarkdown(root, files);
+      const hits = [];
+      for (const abs of files) {
+        const text = await readFile(abs, "utf8").catch(() => null);
+        if (text === null) continue;
+        const fm = parseFrontmatter(text) ?? {};
+        const fmName = fm.name ?? "";
+        const description = fm.description ?? "";
+        const nameHay = `${fmName} ${basename(abs)}`.toLowerCase();
+        const descHay = description.toLowerCase();
+        const bodyHay = text.toLowerCase();
+        let matched = 0;
+        let score = 0;
+        for (const t of terms) {
+          const inName = nameHay.includes(t);
+          const inDesc = descHay.includes(t);
+          const inBody = bodyHay.includes(t);
+          if (!inName && !inDesc && !inBody) continue;
+          matched++;
+          score += (inName ? 5 : 0) + (inDesc ? 3 : 0) + (inBody ? 1 : 0);
+        }
+        if (matched === 0) continue;
+        let snippet = "";
+        const lines = text.split("\n");
+        outer: for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].toLowerCase();
+          for (const t of terms) {
+            if (line.includes(t)) {
+              snippet = `${i + 1}: ${lines[i].trim()}`;
+              break outer;
+            }
+          }
+        }
+        hits.push({ path: relative(MEMORY_DIR, abs), name: fmName, description, matched, score, snippet });
+      }
+      hits.sort((a, b) => b.matched - a.matched || b.score - a.score || a.path.localeCompare(b.path));
+      const where = args.space ? `in ${relative(MEMORY_DIR, root)}/` : "vault-wide";
+      if (hits.length === 0) return `No matches for "${query}" ${where}.`;
+      const MAX_RESULTS = 20;
+      const rows = hits.slice(0, MAX_RESULTS).map((h) => {
+        const head = `${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
+        return h.snippet ? `${head}\n    ${h.snippet}` : head;
+      });
+      const capNote =
+        hits.length > MAX_RESULTS ? `\n(${hits.length - MAX_RESULTS} more matches not shown — refine the query)` : "";
+      return `${hits.length} match${hits.length === 1 ? "" : "es"} for "${query}" ${where}\n\n${rows.join("\n")}${capNote}`;
     }
 
     case "create": {
