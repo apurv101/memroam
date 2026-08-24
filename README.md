@@ -40,7 +40,7 @@ Wire every harness on your machine once:
 npx -y memory-vault install --global
 ```
 
-For each detected harness this writes a user-level stdio MCP registration and the memory ritual in its global rules file — Claude Code (`~/.claude.json` + `~/.claude/CLAUDE.md`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), and DeepSeek Harness (`~/.dsh/AGENTS.md` + a stdio mount in every profile's `cordis.patch.yml`). After that, every session in every repository gets the vault with no per-repo setup: the harness spawns `memory-vault stdio` in the session's directory, and the server derives the project space from that directory automatically (the nearest `.git`, else the shallowest package manifest; no marker means the `default` space). Detected spaces are recorded in `~/.memory-vault-connections.json` so they stay stable.
+For each detected harness this writes a user-level stdio MCP registration and the memory ritual in its global rules file — Claude Code (`~/.claude.json` + `~/.claude/CLAUDE.md`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), DeepSeek Harness (`~/.dsh/AGENTS.md` + a stdio mount in every profile's `cordis.patch.yml`), OpenCode (`~/.config/opencode/opencode.json` + `AGENTS.md`), Gemini CLI (`~/.gemini/settings.json` + `~/.gemini/GEMINI.md`), and Antigravity (`~/.gemini/config/mcp_config.json` + an always-on rule in `~/.gemini/config/rules/`). After that, every session in every repository gets the vault with no per-repo setup: the harness spawns `memory-vault stdio` in the session's directory, and the server derives the project space from that directory automatically (the nearest `.git`, else the shallowest package manifest; no marker means the `default` space). The rule is the same for every harness: a `MEMORY_SPACE` env var on the server entry pins the space explicitly, else the client's MCP workspace roots name it (for harnesses that spawn MCP servers outside the session directory), else the directory decides. Detected spaces are recorded in `~/.memory-vault-connections.json` so they stay stable.
 
 ```sh
 npx -y memory-vault install --global --dry-run        # preview changes
@@ -108,6 +108,9 @@ npx -y memory-vault project    # regenerate the read-only shared/ block in dsh's
 | Cursor | `.cursor/mcp.json`, `AGENTS.md` |
 | Codex | `.codex/config.toml`, `AGENTS.md` |
 | DeepSeek Harness | `dsh-cordis.patch.yml` |
+| OpenCode | `opencode.json`, `AGENTS.md` |
+| Gemini CLI | `.gemini/settings.json`, `AGENTS.md` |
+| Antigravity | `AGENTS.md` (repo rules; MCP wires globally) |
 
 For DSH, start a session with the generated patch:
 

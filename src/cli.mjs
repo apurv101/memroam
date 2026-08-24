@@ -121,7 +121,7 @@ async function install(argv) {
   // 3. MCP registration for each selected harness, then the shared ritual.
   for (const h of HARNESSES) {
     if (selected.includes(h.key)) lines.push(...(await h.install(ctx)));
-    else lines.push(`${h.key.padEnd(9)}${detected.includes(h.key) ? "skipped" : "not detected — skipped"}`);
+    else lines.push(`${(h.key + " ").padEnd(9)}${detected.includes(h.key) ? "skipped" : "not detected — skipped"}`);
   }
   if (selected.length > 0) lines.push(...(await installRules(ctx)));
 

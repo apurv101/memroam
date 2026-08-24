@@ -12,9 +12,10 @@ import codex from "./codex.mjs";
 import dsh from "./dsh.mjs";
 import opencode from "./opencode.mjs";
 import gemini from "./gemini.mjs";
+import antigravity from "./antigravity.mjs";
 
 // Order matters: it is the picker's numbering and the install/report order.
-export const HARNESSES = [claude, cursor, codex, dsh, opencode, gemini];
+export const HARNESSES = [claude, cursor, codex, dsh, opencode, gemini, antigravity];
 
 export { dshProfiles } from "./dsh.mjs";
 export { installRules, uninstallRules } from "./rules.mjs";

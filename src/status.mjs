@@ -28,7 +28,7 @@ export async function status() {
   for (const h of HARNESSES) {
     const raw = await readFile(join(cwd, h.where), "utf8").catch(() => null);
     const state = raw === null ? "not present" : /vault/i.test(raw) ? "wired" : "present, no vault entry";
-    console.log(`  ${h.key.padEnd(9)}${h.where} ${state}`);
+    console.log(`  ${(h.key + " ").padEnd(9)}${h.where} ${state}`);
   }
   const agents = await readFile(join(cwd, "AGENTS.md"), "utf8").catch(() => null);
   console.log(
@@ -39,10 +39,12 @@ export async function status() {
   const home = homedir();
   console.log("\n  global (install --global):");
   const mcpWired = async (path) => {
+    const raw = await readFile(path, "utf8").catch(() => null);
+    if (raw === null) return "not present";
     try {
-      return JSON.parse(await readFile(path, "utf8")).mcpServers?.vault ? "wired" : "present, no vault entry";
+      return JSON.parse(raw).mcpServers?.vault ? "wired" : "present, no vault entry";
     } catch {
-      return "not present";
+      return raw.trim() === "" ? "present, no vault entry" : "not valid JSON";
     }
   };
   const rulesWired = async (path) => {
@@ -78,6 +80,9 @@ export async function status() {
   );
   console.log(
     `  gemini   ~/.gemini/settings.json ${await mcpWired(join(home, ".gemini", "settings.json"))} · GEMINI.md ${await rulesWired(join(home, ".gemini", "GEMINI.md"))}`,
+  );
+  console.log(
+    `  antigravity ~/.gemini/config/mcp_config.json ${await mcpWired(join(home, ".gemini", "config", "mcp_config.json"))} · rules/memory-vault.md ${await rulesWired(join(home, ".gemini", "config", "rules", "memory-vault.md"))}`,
   );
   if (registry.store) console.log(`  store    ${registry.store}`);
   const spaces = Object.entries(registry.spaces ?? {});

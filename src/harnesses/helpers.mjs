@@ -37,7 +37,9 @@ export async function removeGlobalRules(path, dryRun) {
 export async function mergeMcpJson(path, entry, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   let config = {};
-  if (raw !== null) {
+  // A whitespace-only file counts as empty, not invalid — Antigravity seeds
+  // ~/.gemini/config/mcp_config.json as a 0-byte file.
+  if (raw !== null && raw.trim() !== "") {
     try {
       config = JSON.parse(raw);
     } catch {
@@ -60,6 +62,7 @@ export async function mergeMcpJson(path, entry, dryRun) {
 export async function removeMcpJson(path, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   if (raw === null) return "not present";
+  if (raw.trim() === "") return "no vault entry";
   let config;
   try {
     config = JSON.parse(raw);

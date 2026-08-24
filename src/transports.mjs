@@ -3,12 +3,13 @@
 // registrations run — newline-delimited JSON-RPC, one scope per process).
 
 import { createServer } from "node:http";
-import { mkdir, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { JsonRpcError, MEMORY_DIR, PORT, TOOLS, callTool, setMemoryDir } from "./store.mjs";
 import { instructionsFor } from "./instructions.mjs";
-import { readRegistry, resolveSpace } from "./registry.mjs";
+import { projectSlug, readRegistry, resolveSpace } from "./registry.mjs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_INFO = { name: "memory-vault", version: "0.3.1" };
@@ -108,21 +109,32 @@ export const server = createServer(async (req, res) => {
 
 // ── stdio transport ───────────────────────────────────────────────────────────
 //
-// MCP over stdin/stdout, newline-delimited JSON-RPC, one scope for the whole
-// process: the harness spawns us in the session's directory, and that cwd
-// names the project space. Nothing but protocol may touch stdout here.
+// MCP over stdin/stdout, newline-delimited JSON-RPC, one scope per process.
+// The scope is resolved the same way for every harness — no harness-specific
+// code paths: an explicit MEMORY_SPACE env wins, else the client's MCP
+// workspace roots (queried when the client declares the capability), else the
+// process cwd. Roots matter because some harnesses spawn MCP servers at / —
+// the cwd carries no signal there, but the protocol still names the
+// workspace. Nothing but protocol may touch stdout here.
 
 export async function stdioServe() {
   const registry = await readRegistry();
   setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
   await mkdir(MEMORY_DIR, { recursive: true });
   const cwd = process.cwd();
-  const scope = await resolveSpace(cwd);
-  // Sessions in a non-project directory land in the fallback space. Explain
-  // that in the handshake instructions — the session can then tell its user
-  // which folder to open instead of reporting the vault as unreadable.
+
+  // MEMORY_SPACE pins the space explicitly. "shared" is refused like in
+  // auto-detection — it is the org-wide directory, not a project space.
+  const envSpace = projectSlug(process.env.MEMORY_SPACE ?? "");
+  const pinned = envSpace !== "" && envSpace !== "shared";
+  let scope = pinned ? envSpace : await resolveSpace(cwd);
   let scopeNote;
-  if (scope === "default") {
+  if (pinned) {
+    scopeNote = `Scope note: space "${scope}" was set explicitly (MEMORY_SPACE); other spaces remain addressable by path.`;
+  } else if (scope === "default") {
+    // Sessions in a non-project directory land in the fallback space. Explain
+    // that in the handshake instructions — the session can then tell its user
+    // which folder to open instead of reporting the vault as unreadable.
     const entries = await readdir(MEMORY_DIR, { withFileTypes: true }).catch(() => []);
     const spaces = entries
       .filter((e) => e.isDirectory() && e.name !== "default" && e.name !== "shared" && !e.name.startsWith("."))
@@ -138,7 +150,41 @@ export async function stdioServe() {
   } else {
     scopeNote = `Scope note: space "${scope}" was auto-detected from ${cwd}; other spaces remain addressable by path.`;
   }
-  const respond = (id, payload) => process.stdout.write(rpcJson(id, payload) + "\n");
+
+  const log = process.env.MEMORY_VAULT_LOG
+    ? (dir, text) => appendFile(process.env.MEMORY_VAULT_LOG, `${new Date().toISOString()} ${dir} ${text}\n`).catch(() => {})
+    : () => {};
+  const send = (payload) => {
+    const line = JSON.stringify({ jsonrpc: "2.0", ...payload });
+    log("out", line);
+    process.stdout.write(line + "\n");
+  };
+  const respond = (id, payload) => send({ id: id ?? null, ...payload });
+
+  // Roots re-scope: sent after the client's initialized notification (the
+  // protocol forbids server requests before it), so the initialize response's
+  // instructions may briefly describe the cwd-derived scope — tool calls use
+  // whatever the scope is at call time, and MEMORY.md always shows the truth.
+  let clientSupportsRoots = false;
+  const ROOTS_ID = "memory-vault:roots";
+  const requestRoots = () => {
+    if (clientSupportsRoots && !pinned) send({ id: ROOTS_ID, method: "roots/list" });
+  };
+  const applyRoots = async (roots) => {
+    if (pinned || !Array.isArray(roots) || roots.length === 0) return;
+    let rootPath;
+    try {
+      rootPath = fileURLToPath(roots[0].uri);
+    } catch {
+      return;
+    }
+    const rootScope = await resolveSpace(rootPath);
+    if (rootScope !== "default" && rootScope !== scope) {
+      scope = rootScope;
+      scopeNote = `Scope note: space "${scope}" was derived from the client's workspace root (${rootPath}); other spaces remain addressable by path.`;
+    }
+  };
+
   process.stdin.setEncoding("utf8");
   let buffer = "";
   for await (const chunk of process.stdin) {
@@ -148,6 +194,7 @@ export async function stdioServe() {
       const line = buffer.slice(0, newline).trim();
       buffer = buffer.slice(newline + 1);
       if (line === "") continue;
+      log("in", line);
       let message;
       try {
         message = JSON.parse(line);
@@ -159,7 +206,19 @@ export async function stdioServe() {
         respond(null, { error: { code: -32600, message: "Expected a single JSON-RPC message" } });
         continue;
       }
-      if (message.id === undefined || message.id === null) continue; // notification
+      if (message.method === undefined) {
+        // A response to one of our requests — never dispatched, never answered.
+        if (message.id === ROOTS_ID && message.result) await applyRoots(message.result.roots);
+        continue;
+      }
+      if (message.id === undefined || message.id === null) {
+        if (message.method === "notifications/initialized") requestRoots();
+        else if (message.method === "notifications/roots/list_changed") requestRoots();
+        continue; // other notifications need no reply
+      }
+      if (message.method === "initialize") {
+        clientSupportsRoots = Boolean(message.params?.capabilities?.roots);
+      }
       try {
         const result = await dispatch(message.method, message.params, scope, scopeNote);
         respond(message.id, { result });
