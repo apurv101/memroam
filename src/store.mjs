@@ -147,7 +147,8 @@ function uuidv7() {
 
 // Insert `id:` as the first frontmatter key when the block lacks one. Files
 // without a frontmatter block are left alone (they're flagged in the index).
-function stampId(text) {
+// Exported for the adapters, which write candidate files directly.
+export function stampId(text) {
   if (!text.startsWith("---\n")) return text;
   const end = text.indexOf("\n---", 4);
   if (end === -1) return text;

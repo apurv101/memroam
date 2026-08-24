@@ -8,9 +8,10 @@ import { openSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
-import { MEMORY_DIR, PORT } from "./store.mjs";
+import { MEMORY_DIR, PORT, setMemoryDir } from "./store.mjs";
 import { server, stdioServe } from "./transports.mjs";
 import { HARNESSES, installRules, uninstallRules } from "./harnesses/index.mjs";
+import { runAdapters } from "./adapters/index.mjs";
 import { status } from "./status.mjs";
 import {
   CONNECTIONS_PATH,
@@ -230,6 +231,43 @@ async function uninstallGlobal(argv) {
   console.log("\nYour memories are untouched.");
 }
 
+// ── adapters — import native memory, project to memoryless harnesses ─────────
+
+async function adapterCommand(kind, argv) {
+  let dryRun = false;
+  let json = false;
+  for (const a of argv) {
+    if (a === "--dry-run") dryRun = true;
+    else if (a === "--json") json = true;
+    else throw new Error(`unknown flag: ${a} (usage: memory-vault ${kind === "import" ? "import" : "project"} [--dry-run] [--json])`);
+  }
+  const registry = await readRegistry();
+  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  const reports = await runAdapters(kind, { dryRun });
+  if (json) {
+    console.log(JSON.stringify(reports, null, 2));
+    return;
+  }
+  console.log(`memory-vault ${kind}${dryRun ? " (dry run)" : ""} — store: ${MEMORY_DIR}\n`);
+  for (const r of reports) {
+    console.log(`  ${r.adapter} (${r.tier ?? "?"})`);
+    if (r.error) {
+      console.log(`    error:  ${r.error}`);
+      continue;
+    }
+    console.log(`    can:    ${r.can}`);
+    console.log(`    cannot: ${r.cannot}`);
+    if (r.imported !== undefined)
+      console.log(`    imported: ${r.imported}${r.skippedExisting ? ` (skipped ${r.skippedExisting} already imported)` : ""}`);
+    if (r.spaces && Object.keys(r.spaces).length > 0)
+      console.log(`    into: ${Object.entries(r.spaces).map(([s, n]) => `${s}/candidates (${n})`).join(", ")}`);
+    if (r.unmapped?.length > 0) console.log(`    unmapped projects skipped: ${r.unmapped.join(", ")}`);
+    if (r.projected !== undefined) console.log(`    projected: ${r.projected} shared memories`);
+    for (const n of r.notes ?? []) console.log(`    note: ${n}`);
+  }
+  if (kind === "import") console.log("\nImported observations sit in candidates/ (searchable, labeled) until the gardener promotes them.");
+}
+
 // ── CLI dispatch ──────────────────────────────────────────────────────────────
 
 const USAGE = `memory-vault — Claude-style memory over a local folder, via MCP
@@ -253,6 +291,10 @@ const USAGE = `memory-vault — Claude-style memory over a local folder, via MCP
                             [--project <name>] [--harness <keys>] [--yes] [--dry-run]
   memory-vault uninstall    undo install for this repo  (alias: disconnect)
                             [--project <name>] [--dry-run]
+  memory-vault import       import native harness memory (Claude auto-memory,
+                            Codex sqlite) into candidates/ [--dry-run] [--json]
+  memory-vault project      regenerate read-only projections for harnesses
+                            without native memory (dsh)   [--dry-run] [--json]
   memory-vault status       show server state, this repo's wiring, the global
                             wiring, and every repo recorded by install`;
 
@@ -276,6 +318,13 @@ export async function runCli(argv, self) {
       else await uninstall(rest);
     } catch (err) {
       console.error(`memory-vault uninstall: ${err.message}`);
+      process.exit(1);
+    }
+  } else if (cmd === "import" || cmd === "project") {
+    try {
+      await adapterCommand(cmd, rest);
+    } catch (err) {
+      console.error(`memory-vault ${cmd}: ${err.message}`);
       process.exit(1);
     }
   } else if (cmd === "stdio") {
