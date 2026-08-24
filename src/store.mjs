@@ -3,7 +3,7 @@
 
 import { mkdir, readdir, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
 export const PORT = Number(process.env.VAULT_PORT ?? 8787);
@@ -75,6 +75,59 @@ function rel(abs, scope) {
   return relative(MEMORY_DIR, abs) || ".";
 }
 
+// ── Generated MEMORY.md (S1) ──────────────────────────────────────────────────
+//
+// Each space's MEMORY.md is a deterministic projection of its files'
+// frontmatter, regenerated after every successful mutation in that space.
+// Direct edits to an index are refused — the description: field IS the index
+// line, so the index can never disagree with the files.
+
+const INDEX_FILE = "MEMORY.md";
+const isIndex = (abs) => basename(abs) === INDEX_FILE;
+
+function parseFrontmatter(text) {
+  if (!text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) return null;
+  const block = text.slice(4, end);
+  const get = (key) => block.match(new RegExp(`^${key}:[ \\t]*(.+)$`, "m"))?.[1].trim();
+  return { name: get("name"), description: get("description") };
+}
+
+export async function regenerateIndex(space) {
+  const dir = join(MEMORY_DIR, space);
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+  if (entries === null) return; // space no longer exists — nothing to index
+  const rows = [];
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith(".md") || e.name === INDEX_FILE || e.name.startsWith(".")) continue;
+    const fm = parseFrontmatter(await readFile(join(dir, e.name), "utf8").catch(() => ""));
+    rows.push(
+      fm?.name && fm?.description
+        ? { key: fm.name, line: `- [${fm.name}](${e.name}) — ${fm.description}` }
+        : { key: e.name, line: `- [${e.name}](${e.name}) — ⚠ no frontmatter` },
+    );
+  }
+  rows.sort((a, b) => a.key.localeCompare(b.key));
+  const title = space === "shared" ? "# shared — org-wide memory index" : `# ${space} — memory index`;
+  const body = rows.length ? rows.map((r) => r.line).join("\n") : "(no memories in this space yet)";
+  await atomicWrite(join(dir, INDEX_FILE), `${title}\n\n${body}\n`);
+}
+
+// Regenerate the index of every space a mutation touched. A path directly at
+// the memory root belongs to no space and is skipped.
+async function reindexFor(...paths) {
+  const spaces = new Set();
+  for (const abs of paths) {
+    const segs = relative(MEMORY_DIR, abs).split(sep);
+    if (segs.length >= 2 && segs[0] && segs[0] !== ".." && !segs[0].startsWith(".")) spaces.add(segs[0]);
+  }
+  for (const space of spaces) await regenerateIndex(space);
+}
+
+const INDEX_EDIT_ERROR =
+  "MEMORY.md is generated from each memory file's frontmatter — it can't be edited directly. Edit the memory file's description: instead; the index regenerates automatically.";
+
 // ── The six memory commands ───────────────────────────────────────────────────
 
 export const TOOLS = [
@@ -98,7 +151,7 @@ export const TOOLS = [
   {
     name: "create",
     description:
-      "Create or overwrite a file in the memory folder. Memories are markdown files with 'name:' and 'description:' frontmatter; after creating one, update MEMORY.md.",
+      "Create or overwrite a file in the memory folder. Memories are markdown files with 'name:' and 'description:' frontmatter; MEMORY.md regenerates automatically — the description becomes the index line.",
     inputSchema: {
       type: "object",
       properties: {
@@ -138,7 +191,7 @@ export const TOOLS = [
   {
     name: "delete",
     description:
-      "Delete a file or directory in the memory folder. Remember to remove the memory's line from MEMORY.md.",
+      "Delete a file or directory in the memory folder. The MEMORY.md index updates automatically.",
     inputSchema: {
       type: "object",
       properties: {
@@ -199,14 +252,17 @@ export async function callTool(name, args, scope) {
 
     case "create": {
       const abs = resolvePath(args.path, scope);
+      if (isIndex(abs)) throw new ToolError(INDEX_EDIT_ERROR);
       if (typeof args.file_text !== "string") throw new ToolError("file_text is required");
       await mkdir(dirname(abs), { recursive: true });
       await atomicWrite(abs, args.file_text);
+      await reindexFor(abs);
       return `Created ${rel(abs, scope)}`;
     }
 
     case "str_replace": {
       const abs = resolvePath(args.path, scope);
+      if (isIndex(abs)) throw new ToolError(INDEX_EDIT_ERROR);
       const text = await readFile(abs, "utf8").catch(() => {
         throw new ToolError(`not found: ${args.path}`);
       });
@@ -218,11 +274,13 @@ export async function callTool(name, args, scope) {
       if (count === 0) throw new ToolError("old_str not found in file");
       if (count > 1) throw new ToolError(`old_str occurs ${count} times — must be unique`);
       await atomicWrite(abs, text.replace(oldStr, newStr));
+      await reindexFor(abs);
       return `Edited ${rel(abs, scope)}`;
     }
 
     case "insert": {
       const abs = resolvePath(args.path, scope);
+      if (isIndex(abs)) throw new ToolError(INDEX_EDIT_ERROR);
       const text = await readFile(abs, "utf8").catch(() => {
         throw new ToolError(`not found: ${args.path}`);
       });
@@ -233,6 +291,7 @@ export async function callTool(name, args, scope) {
       }
       lines.splice(at, 0, String(args.insert_text ?? ""));
       await atomicWrite(abs, lines.join("\n"));
+      await reindexFor(abs);
       return `Inserted into ${rel(abs, scope)} after line ${at}`;
     }
 
@@ -241,18 +300,22 @@ export async function callTool(name, args, scope) {
       if (abs === MEMORY_DIR || dirname(abs) === MEMORY_DIR) {
         throw new ToolError("refusing to delete the memory root or a space root");
       }
+      if (isIndex(abs)) throw new ToolError(INDEX_EDIT_ERROR);
       const st = await stat(abs).catch(() => null);
       if (!st) throw new ToolError(`not found: ${args.path}`);
       await rm(abs, { recursive: true });
+      await reindexFor(abs);
       return `Deleted ${rel(abs, scope)}`;
     }
 
     case "rename": {
       const from = resolvePath(args.old_path, scope);
       const to = resolvePath(args.new_path, scope);
+      if (isIndex(from) || isIndex(to)) throw new ToolError(INDEX_EDIT_ERROR);
       if (!(await stat(from).catch(() => null))) throw new ToolError(`not found: ${args.old_path}`);
       await mkdir(dirname(to), { recursive: true });
       await fsRename(from, to);
+      await reindexFor(from, to);
       return `Renamed ${rel(from, scope)} → ${rel(to, scope)}`;
     }
 
