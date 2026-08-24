@@ -3,6 +3,7 @@
 
 import { mkdir, readdir, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
@@ -128,6 +129,32 @@ async function reindexFor(...paths) {
 const INDEX_EDIT_ERROR =
   "MEMORY.md is generated from each memory file's frontmatter — it can't be edited directly. Edit the memory file's description: instead; the index regenerates automatically.";
 
+// ── Identity (S3) ─────────────────────────────────────────────────────────────
+//
+// Every memory file gets an immutable UUIDv7 `id:` at creation — the server
+// stamps it when the frontmatter lacks one, so no file class without identity
+// ever exists. The slug/filename stays mutable; rename never touches id.
+
+function uuidv7() {
+  const b = randomBytes(16);
+  const ts = BigInt(Date.now());
+  for (let i = 0; i < 6; i++) b[i] = Number((ts >> BigInt(8 * (5 - i))) & 0xffn);
+  b[6] = (b[6] & 0x0f) | 0x70;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = b.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// Insert `id:` as the first frontmatter key when the block lacks one. Files
+// without a frontmatter block are left alone (they're flagged in the index).
+function stampId(text) {
+  if (!text.startsWith("---\n")) return text;
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) return text;
+  if (/^id:/m.test(text.slice(4, end))) return text;
+  return `---\nid: ${uuidv7()}\n${text.slice(4)}`;
+}
+
 // ── search (S2) ───────────────────────────────────────────────────────────────
 //
 // Grep-tier by design: scan on demand, no index files, no embeddings.
@@ -178,12 +205,13 @@ export const TOOLS = [
   {
     name: "create",
     description:
-      "Create or overwrite a file in the memory folder. Memories are markdown files with 'name:' and 'description:' frontmatter; MEMORY.md regenerates automatically — the description becomes the index line.",
+      "Create a file in the memory folder. Memories are markdown files with 'name:' and 'description:' frontmatter; MEMORY.md regenerates automatically — the description becomes the index line. Refuses to replace an existing file unless overwrite is true; to change an existing memory, edit it with str_replace/insert instead.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Path relative to the memory root" },
         file_text: { type: "string", description: "Full file contents" },
+        overwrite: { type: "boolean", description: "Set true to deliberately replace an existing file (default false)" },
       },
       required: ["path", "file_text"],
     },
@@ -340,8 +368,13 @@ export async function callTool(name, args, scope) {
       const abs = resolvePath(args.path, scope);
       if (isIndex(abs)) throw new ToolError(INDEX_EDIT_ERROR);
       if (typeof args.file_text !== "string") throw new ToolError("file_text is required");
+      if (args.overwrite !== true && existsSync(abs)) {
+        throw new ToolError(
+          `${rel(abs, scope)} already exists — edit it with str_replace/insert, or pass overwrite: true to replace it deliberately`,
+        );
+      }
       await mkdir(dirname(abs), { recursive: true });
-      await atomicWrite(abs, args.file_text);
+      await atomicWrite(abs, stampId(args.file_text));
       await reindexFor(abs);
       return `Created ${rel(abs, scope)}`;
     }
