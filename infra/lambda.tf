@@ -17,6 +17,7 @@ resource "aws_lambda_function" "server" {
 
   environment {
     variables = {
+      MV_PUBLIC_BASE           = "https://${var.domain}"
       MV_USERS_TABLE           = aws_dynamodb_table.users.name
       MV_OAUTH_CLIENTS_TABLE   = aws_dynamodb_table.oauth_clients.name
       MV_GRANTS_TABLE          = aws_dynamodb_table.grants.name

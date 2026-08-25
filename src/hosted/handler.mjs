@@ -78,7 +78,9 @@ export async function handler(event) {
   const method = event.requestContext?.http?.method ?? "GET";
   const path = (event.rawPath ?? "/").replace(/\/+$/, "") || "/";
   const headers = event.headers ?? {};
-  const base = `https://${headers.host ?? headers.Host ?? ""}`;
+  // The public base URL (custom domain) is pinned via env; falling back to the
+  // Host header keeps the raw Function URL working for existing connectors.
+  const base = process.env.MV_PUBLIC_BASE || `https://${headers.host ?? headers.Host ?? ""}`;
   const query = Object.fromEntries(new URLSearchParams(event.rawQueryString ?? ""));
   const rawBody = event.body ? (event.isBase64Encoded ? Buffer.from(event.body, "base64").toString("utf8") : event.body) : "";
 
