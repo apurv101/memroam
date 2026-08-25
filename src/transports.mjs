@@ -4,49 +4,15 @@
 
 import { createServer } from "node:http";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
-import { JsonRpcError, MEMORY_DIR, PORT, TOOLS, callTool, setMemoryDir } from "./store.mjs";
+import { JsonRpcError, MEMORY_DIR, PORT, callTool, setMemoryDir } from "./store.mjs";
 import { instructionsFor } from "./instructions.mjs";
+import { makeDispatch } from "./dispatch.mjs";
 import { projectSlug, readRegistry, resolveSpace } from "./registry.mjs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const SERVER_INFO = { name: "memory-vault", version: "0.3.1" };
-
-// ── JSON-RPC / MCP dispatch ───────────────────────────────────────────────────
-
-async function dispatch(method, params, scope, scopeNote) {
-  switch (method) {
-    case "initialize":
-      return {
-        protocolVersion: PROTOCOL_VERSIONS.includes(params?.protocolVersion)
-          ? params.protocolVersion
-          : PROTOCOL_VERSIONS[0],
-        capabilities: { tools: {} },
-        serverInfo: SERVER_INFO,
-        instructions: scopeNote ? `${instructionsFor(scope)}\n\n${scopeNote}` : instructionsFor(scope),
-      };
-    case "ping":
-      return {};
-    case "tools/list":
-      return { tools: TOOLS };
-    case "tools/call": {
-      if (typeof params?.name !== "string") {
-        throw new JsonRpcError(-32602, "tools/call requires a tool name");
-      }
-      try {
-        const text = await callTool(params.name, params.arguments ?? {}, scope);
-        return { content: [{ type: "text", text }], isError: false };
-      } catch (err) {
-        if (err instanceof JsonRpcError) throw err;
-        return { content: [{ type: "text", text: err.message }], isError: true };
-      }
-    }
-    default:
-      throw new JsonRpcError(-32601, `Method not found: ${method}`);
-  }
-}
+const dispatch = makeDispatch({ callTool, instructions: instructionsFor });
 
 // ── HTTP server (127.0.0.1 only) ──────────────────────────────────────────────
 
