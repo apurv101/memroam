@@ -7,6 +7,7 @@ const esc = (s) =>
 const shell = (title, body) => `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="256x256">
 <style>
   body{font-family:-apple-system,system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;color:#1a1a1a;background:#fafafa;line-height:1.55}
   h1{font-size:1.25rem} code{background:#eee;padding:.1em .35em;border-radius:4px}

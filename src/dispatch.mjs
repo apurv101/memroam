@@ -5,8 +5,20 @@
 
 import { JsonRpcError, TOOLS } from "./store.mjs";
 
-export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-export const SERVER_INFO = { name: "memory-vault", version: "0.3.1" };
+export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+// icons/websiteUrl are the 2025-11-25 spec's serverInfo fields; older clients
+// ignore them. The URLs are served by the hosted tier and resolve for local
+// (stdio) sessions too — the logo lives at the public domain either way.
+export const SERVER_INFO = {
+  name: "memory-vault",
+  title: "Memory Vault",
+  version: "0.3.1",
+  websiteUrl: "https://memoryvault.click",
+  icons: [
+    { src: "https://memoryvault.click/icon.svg", mimeType: "image/svg+xml", sizes: ["any"] },
+    { src: "https://memoryvault.click/icon.png", mimeType: "image/png", sizes: ["256x256"] },
+  ],
+};
 
 export function makeDispatch({ callTool, instructions, serverInfo = SERVER_INFO, tools = TOOLS }) {
   return async function dispatch(method, params, scope, scopeNote) {

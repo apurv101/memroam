@@ -18,6 +18,7 @@ import {
   register,
   token,
 } from "./oauth.mjs";
+import { ICON_PNG_BASE64, ICON_SVG } from "./icon.mjs";
 import { landingPage } from "./pages.mjs";
 
 const respond = ({ status, headers = {}, body = "" }) => ({ statusCode: status, headers, body });
@@ -87,6 +88,21 @@ export async function handler(event) {
   try {
     if (path === "/" && method === "GET") {
       return respond({ status: 200, headers: { "content-type": "text/html; charset=utf-8" }, body: landingPage() });
+    }
+    if (path === "/icon.svg" && method === "GET") {
+      return respond({
+        status: 200,
+        headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" },
+        body: ICON_SVG,
+      });
+    }
+    if ((path === "/icon.png" || path === "/favicon.ico") && method === "GET") {
+      return {
+        statusCode: 200,
+        headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" },
+        body: ICON_PNG_BASE64,
+        isBase64Encoded: true,
+      };
     }
     if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") {
       return respond(protectedResourceMetadata(base));
