@@ -16,8 +16,8 @@ variable "name_prefix" {
   default     = "memory-vault"
 }
 
-# Path to the built server zip. Null = deploy the inline placeholder
-# handler, so `terraform apply` works before the real server exists.
+# Path to the built server zip; `make deploy`/`make plan` build it via the
+# package target and pass it as TF_VAR_package_zip.
 variable "package_zip" {
   description = "Path to the Lambda deployment zip"
   type        = string
