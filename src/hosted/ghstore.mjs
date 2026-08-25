@@ -8,10 +8,12 @@
 import {
   ToolError,
   JsonRpcError,
+  fetchPayload,
   indexContent,
   indexRow,
   renderSearch,
   scoreMemory,
+  searchResultsPayload,
   stampId,
 } from "../store.mjs";
 import { ghApi, mintInstallationToken } from "./github-auth.mjs";
@@ -116,6 +118,11 @@ function rel(store, path) {
   if (path === store.scope) return ".";
   return path.startsWith(prefix) ? path.slice(prefix.length) : path;
 }
+
+// Citation URL for a memory: its page in the user's own (private) repo —
+// real for the user, and non-empty so ChatGPT-family clients cite it.
+const blobUrl = (store, path) =>
+  `https://github.com/${store.fullName}/blob/${store.branch}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
 const isIndex = (path) => path.split("/").pop() === INDEX_FILE;
 const INDEX_EDIT_ERROR =
@@ -279,7 +286,20 @@ async function runTool(store, name, args) {
         for (const hit of batch) if (hit) hits.push(hit);
       }
       const where = args.space ? `in ${prefix}` : "vault-wide";
-      return renderSearch(hits, query, where);
+      return {
+        text: renderSearch(hits, query, where),
+        structuredContent: searchResultsPayload(hits, (p) => blobUrl(store, p)),
+      };
+    }
+
+    case "fetch": {
+      const id = String(args.id ?? "").trim();
+      if (!id) throw new ToolError("id is required");
+      const path = resolvePath(store, id);
+      const text = await readBlob(store, path);
+      if (text === null) throw new ToolError(`not found: ${id}`);
+      const payload = fetchPayload(path, text, blobUrl(store, path));
+      return { text: JSON.stringify(payload), structuredContent: payload };
     }
 
     case "create": {

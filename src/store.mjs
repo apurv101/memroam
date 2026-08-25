@@ -211,10 +211,13 @@ export function scoreMemory(path, fileName, text, terms) {
   return { path, name: fmName, description, matched, score, snippet };
 }
 
-export function renderSearch(hits, query, where) {
+const MAX_RESULTS = 20;
+const sortHits = (hits) =>
   hits.sort((a, b) => b.matched - a.matched || b.score - a.score || a.path.localeCompare(b.path));
+
+export function renderSearch(hits, query, where) {
+  sortHits(hits);
   if (hits.length === 0) return `No matches for "${query}" ${where}.`;
-  const MAX_RESULTS = 20;
   const rows = hits.slice(0, MAX_RESULTS).map((h) => {
     const tag = isCandidate(h.path) ? "[candidate] " : "";
     const head = `${tag}${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
@@ -223,6 +226,34 @@ export function renderSearch(hits, query, where) {
   const capNote =
     hits.length > MAX_RESULTS ? `\n(${hits.length - MAX_RESULTS} more matches not shown — refine the query)` : "";
   return `${hits.length} match${hits.length === 1 ? "" : "es"} for "${query}" ${where}\n\n${rows.join("\n")}${capNote}`;
+}
+
+// OpenAI-connector search shape ({results: [{id, title, url}]}): same ordering
+// and cap as renderSearch. `url` must be non-empty for ChatGPT to cite a
+// result — the hosted store passes GitHub blob URLs; local stores have no web
+// URL and pass nothing.
+export function searchResultsPayload(hits, toUrl = () => "") {
+  return {
+    results: sortHits(hits)
+      .slice(0, MAX_RESULTS)
+      .map((h) => ({
+        id: h.path,
+        title: [h.name || h.path.split("/").pop(), h.description].filter(Boolean).join(": "),
+        url: toUrl(h.path),
+      })),
+  };
+}
+
+// OpenAI-connector fetch shape for one memory file.
+export function fetchPayload(path, text, url = "") {
+  const fm = parseFrontmatter(text) ?? {};
+  return {
+    id: path,
+    title: fm.name || path.split("/").pop(),
+    text,
+    url,
+    metadata: fm.description ? { description: fm.description } : {},
+  };
 }
 
 // ── search (S2) ───────────────────────────────────────────────────────────────
@@ -258,6 +289,7 @@ export const TOOLS = [
       },
       required: ["path"],
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: "search",
@@ -271,6 +303,20 @@ export const TOOLS = [
       },
       required: ["query"],
     },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "fetch",
+    description:
+      "Fetch one memory file in full by its id — the vault-relative path that search results and MEMORY.md entries use (e.g. 'shared/some-memory.md'). Returns the complete contents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The memory's id: its path relative to the memory root" },
+      },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true },
   },
   {
     name: "create",
@@ -395,7 +441,17 @@ export async function callTool(name, args, scope) {
         if (hit) hits.push(hit);
       }
       const where = args.space ? `in ${relative(MEMORY_DIR, root)}/` : "vault-wide";
-      return renderSearch(hits, query, where);
+      return { text: renderSearch(hits, query, where), structuredContent: searchResultsPayload(hits) };
+    }
+
+    case "fetch": {
+      const id = String(args.id ?? "").trim();
+      if (!id) throw new ToolError("id is required");
+      const abs = resolvePath(id, scope);
+      const st = await stat(abs).catch(() => null);
+      if (!st || st.isDirectory()) throw new ToolError(`not found: ${id}`);
+      const payload = fetchPayload(relative(MEMORY_DIR, abs), await readFile(abs, "utf8"));
+      return { text: JSON.stringify(payload), structuredContent: payload };
     }
 
     case "create": {

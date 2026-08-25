@@ -29,8 +29,16 @@ export function makeDispatch({ callTool, instructions, serverInfo = SERVER_INFO,
           throw new JsonRpcError(-32602, "tools/call requires a tool name");
         }
         try {
-          const text = await callTool(params.name, params.arguments ?? {}, scope);
-          return { content: [{ type: "text", text }], isError: false };
+          // Tools return a plain string, or {text, structuredContent} — the
+          // structured form exists for OpenAI-connector search/fetch, whose
+          // clients read structuredContent (MCP 2025-06-18).
+          const out = await callTool(params.name, params.arguments ?? {}, scope);
+          const { text, structuredContent } = typeof out === "string" ? { text: out } : out;
+          return {
+            content: [{ type: "text", text }],
+            ...(structuredContent !== undefined ? { structuredContent } : {}),
+            isError: false,
+          };
         } catch (err) {
           if (err instanceof JsonRpcError) throw err;
           return { content: [{ type: "text", text: err.message }], isError: true };
