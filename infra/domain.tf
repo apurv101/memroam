@@ -57,7 +57,7 @@ resource "aws_cloudfront_response_headers_policy" "mcp_auth_header" {
   custom_headers_config {
     items {
       header   = "WWW-Authenticate"
-      value    = "Bearer resource_metadata=\"https://${var.domain}/.well-known/oauth-protected-resource\""
+      value    = "Bearer resource_metadata=\"https://${var.alt_domain}/.well-known/oauth-protected-resource\""
       override = false
     }
   }
