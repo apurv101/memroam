@@ -333,7 +333,8 @@ export async function runCli(argv, self) {
     await status();
   } else if (cmd === undefined || cmd === "serve") {
     await mkdir(MEMORY_DIR, { recursive: true });
-    server.listen(PORT, "127.0.0.1", () => {
+    // Loopback-only by default; VAULT_HOST=0.0.0.0 for containerized runs.
+    server.listen(PORT, process.env.VAULT_HOST ?? "127.0.0.1", () => {
       console.log(`memroam serving ${MEMORY_DIR}`);
       console.log(`MCP endpoints: http://localhost:${PORT}/mcp/<project> (scoped), http://localhost:${PORT}/mcp (whole vault)`);
     });

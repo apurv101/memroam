@@ -5,6 +5,7 @@ WORKDIR /app
 COPY package.json server.mjs index.mjs ./
 COPY src ./src
 ENV MEMORY_DIR=/data
+ENV VAULT_HOST=0.0.0.0
 VOLUME /data
 EXPOSE 8787
 CMD ["node", "server.mjs"]
