@@ -23,9 +23,11 @@ This repo uses the Memroam MCP server (\`memroam\`) for persistent memory. At se
 
 // Markers around the written section let uninstall remove it verbatim even if
 // the section text changes in a future version. (Sections written before the
-// markers existed are removed by exact-text match instead.)
-export const MARK_BEGIN = "<!-- memory-vault:begin -->";
-export const MARK_END = "<!-- memory-vault:end -->";
+// markers existed are removed by exact-text match instead.) Sections from the
+// memory-vault era carry the old marker name — MARKED_SECTION_RE matches both.
+export const MARK_BEGIN = "<!-- memroam:begin -->";
+export const MARK_END = "<!-- memroam:end -->";
+export const MARKED_SECTION_RE = /(?:^|\n)<!-- (?:memroam|memory-vault):begin -->\n[\s\S]*?<!-- (?:memroam|memory-vault):end -->\n?/;
 export const MARKED_SECTION = `${MARK_BEGIN}\n${MEMORY_SECTION}${MARK_END}\n`;
 
 // The user-global ritual differs from the repo one: no fixed project name

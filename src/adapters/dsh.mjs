@@ -9,8 +9,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { MEMORY_DIR, exists } from "../store.mjs";
 
-const MARK_BEGIN = "<!-- memory-vault:projection:begin -->";
-const MARK_END = "<!-- memory-vault:projection:end -->";
+const MARK_BEGIN = "<!-- memroam:projection:begin -->";
+const MARK_END = "<!-- memroam:projection:end -->";
+// Replaces a block written under either marker name — memory-vault-era
+// projections get rewritten with the new markers on the next run.
+const MARKED_RE = /<!-- (?:memroam|memory-vault):projection:begin -->[\s\S]*?<!-- (?:memroam|memory-vault):projection:end -->\n?/;
 
 export default {
   key: "dsh",
@@ -36,7 +39,7 @@ export default {
       `${lines.join("\n")}\n${MARK_END}\n`;
 
     const raw = await readFile(agentsPath, "utf8").catch(() => null);
-    const marked = new RegExp(`${MARK_BEGIN}[\\s\\S]*?${MARK_END}\\n?`);
+    const marked = MARKED_RE;
     let next;
     if (raw === null) next = block;
     else if (marked.test(raw)) next = raw.replace(marked, block);

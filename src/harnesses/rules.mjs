@@ -4,7 +4,7 @@
 
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MARKED_SECTION, MEMORY_SECTION } from "../instructions.mjs";
+import { MARKED_SECTION, MARKED_SECTION_RE, MEMORY_SECTION } from "../instructions.mjs";
 
 export async function installRules({ cwd, project, dryRun }) {
   const lines = [];
@@ -45,7 +45,7 @@ export async function uninstallRules({ cwd, project, dryRun }) {
   } else {
     // Marker-delimited sections first (written by install going forward),
     // exact text of the current section as fallback for older installs.
-    const marked = /(?:^|\n)<!-- memory-vault:begin -->\n[\s\S]*?<!-- memory-vault:end -->\n?/;
+    const marked = MARKED_SECTION_RE;
     let cleaned = null;
     if (marked.test(agents)) cleaned = agents.replace(marked, "\n");
     else if (agents.includes(MEMORY_SECTION)) cleaned = agents.replace(MEMORY_SECTION, "");

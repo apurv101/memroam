@@ -44,7 +44,7 @@
 //   instructions.mjs  every ritual/instruction string, in one place
 //   transports.mjs    MCP dispatch over Streamable HTTP and stdio
 //   harnesses.mjs     the per-harness install/uninstall registry
-//   registry.mjs      ~/.memory-vault-connections.json + space detection
+//   registry.mjs      ~/.memroam-connections.json + space detection
 //   cli.mjs           install/uninstall/status + command dispatch
 
 import { fileURLToPath } from "node:url";

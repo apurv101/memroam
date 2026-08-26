@@ -4,7 +4,7 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { GLOBAL_MARKED_SECTION } from "../instructions.mjs";
+import { GLOBAL_MARKED_SECTION, MARKED_SECTION_RE } from "../instructions.mjs";
 
 // Append the global ritual to one harness's user-global rules file. The file's
 // parent directory must already exist (the caller detects the harness first);
@@ -19,7 +19,7 @@ export async function upsertGlobalRules(path, dryRun) {
 export async function removeGlobalRules(path, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   if (raw === null) return "not present";
-  const marked = /(?:^|\n)<!-- memory-vault:begin -->\n[\s\S]*?<!-- memory-vault:end -->\n?/;
+  const marked = MARKED_SECTION_RE;
   if (!marked.test(raw)) {
     return /vault|memroam/i.test(raw) ? "mentions memroam but not the managed section — edit by hand" : "no memory section";
   }
