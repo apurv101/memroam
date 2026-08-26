@@ -83,13 +83,15 @@ async function install(argv) {
   const lines = [];
 
   // 1. The server. If it's already up it keeps its own MEMORY_DIR; only a
-  // fresh start needs a store location.
+  // fresh start needs a store location — env wins, then the store recorded by
+  // a previous install (same fallback chain as install --global).
+  const registryStore = (await readRegistry()).store;
   if (await serverUp()) {
     lines.push(`server   already running on port ${PORT}`);
   } else if (dryRun) {
-    lines.push(`server   down — would start it (store: ${process.env.MEMORY_DIR ?? defaultStoreDir()})`);
+    lines.push(`server   down — would start it (store: ${process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir()})`);
   } else {
-    const storeDir = resolve(process.env.MEMORY_DIR ?? defaultStoreDir());
+    const storeDir = resolve(process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir());
     const log = openSync(join(tmpdir(), "memroam.log"), "a");
     spawn(process.execPath, [SELF], {
       detached: true,
@@ -135,7 +137,7 @@ async function install(argv) {
 
   console.log(`memroam install — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
-  console.log("\nRestart your session and approve the vault MCP server when prompted.");
+  console.log("\nRestart your session and approve the memroam MCP server when prompted.");
 }
 
 async function uninstall(argv) {
@@ -165,7 +167,7 @@ async function uninstall(argv) {
   for (const l of lines) console.log(`  ${l}`);
   console.log(
     `\nYour memories are untouched — the store stays in the vault directory (default ${defaultStoreDir()}).\n` +
-      "The server keeps running for other projects; restart your agent session to drop the vault tools.",
+      "The server keeps running for other projects; restart your agent session to drop the memroam tools.",
   );
 }
 
@@ -207,7 +209,7 @@ async function installGlobal(argv) {
   }
   console.log(`memroam install --global${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
-  console.log("\nRestart your sessions; each one gets the vault tools and lands in its own project space automatically.");
+  console.log("\nRestart your sessions; each one gets the memroam tools and lands in its own project space automatically.");
 }
 
 async function uninstallGlobal(argv) {

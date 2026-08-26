@@ -18,7 +18,7 @@ Store durable facts, corrections, lessons, and decisions — things that should 
 
 export const MEMORY_SECTION = `## Memory
 
-This repo uses the vault MCP server (\`vault\`) for persistent memory. At session start, view \`MEMORY.md\` with the vault tools and read any entries relevant to the task. Before finishing, save durable facts, corrections, lessons, and decisions to the vault — one markdown file per fact with \`name:\`/\`description:\` frontmatter (\`MEMORY.md\` regenerates automatically; the description becomes the index line). Check whether an existing memory already covers it before creating a new one. Facts that apply beyond this project go in \`shared/\`. Prefer the vault over any built-in auto-memory.
+This repo uses the Memroam MCP server (\`memroam\`) for persistent memory. At session start, view \`MEMORY.md\` with the memroam tools and read any entries relevant to the task. Before finishing, save durable facts, corrections, lessons, and decisions to the vault — one markdown file per fact with \`name:\`/\`description:\` frontmatter (\`MEMORY.md\` regenerates automatically; the description becomes the index line). Check whether an existing memory already covers it before creating a new one. Facts that apply beyond this project go in \`shared/\`. Prefer memroam over any built-in auto-memory.
 `;
 
 // Markers around the written section let uninstall remove it verbatim even if
@@ -33,7 +33,7 @@ export const MARKED_SECTION = `${MARK_BEGIN}\n${MEMORY_SECTION}${MARK_END}\n`;
 // only as the opt-out for a custom space name.
 export const GLOBAL_MEMORY_SECTION = `## Memory
 
-A Memroam MCP server (\`vault\`) provides persistent cross-session memory; when its tools are available, prefer them over any built-in auto-memory. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere. At session start, view \`MEMORY.md\` with the vault tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`. Before finishing, save durable facts, corrections, lessons, and decisions — one markdown file per fact with \`name:\`/\`description:\` frontmatter (\`MEMORY.md\` regenerates automatically; the description becomes the index line). Check whether an existing memory already covers it before creating a new one; delete memories that turn out to be wrong. Don't store what the repo or chat history already records.
+A Memroam MCP server (\`memroam\`) provides persistent cross-session memory; when its tools are available, prefer them over any built-in auto-memory. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere. At session start, view \`MEMORY.md\` with the memroam tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`. Before finishing, save durable facts, corrections, lessons, and decisions — one markdown file per fact with \`name:\`/\`description:\` frontmatter (\`MEMORY.md\` regenerates automatically; the description becomes the index line). Check whether an existing memory already covers it before creating a new one; delete memories that turn out to be wrong. Don't store what the repo or chat history already records.
 `;
 export const GLOBAL_MARKED_SECTION = `${MARK_BEGIN}\n${GLOBAL_MEMORY_SECTION}${MARK_END}\n`;
 
@@ -44,7 +44,7 @@ export const GLOBAL_MARKED_SECTION = `${MARK_BEGIN}\n${GLOBAL_MEMORY_SECTION}${M
 export const CURSOR_RITUAL_SKILL = `---
 name: memroam
 description: >-
-  Persistent cross-session memory via the vault MCP server. Use at the start
+  Persistent cross-session memory via the Memroam MCP server. Use at the start
   of any coding task to recall project memory and context from previous
   sessions, whenever the user mentions remembering, memory, or past
   decisions, and before finishing work to save durable facts, corrections,
@@ -52,9 +52,9 @@ description: >-
 ---
 # Memroam
 
-A Memroam MCP server (\`vault\`) provides persistent cross-session memory shared across coding agents. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere.
+A Memroam MCP server (\`memroam\`) provides persistent cross-session memory shared across coding agents. Memories are scoped to a per-project space automatically (detected from the session's directory); \`shared/\` is cross-project memory visible everywhere.
 
-At the start of a task: view \`MEMORY.md\` with the vault tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`.
+At the start of a task: view \`MEMORY.md\` with the memroam tools and read any entries relevant to the task; also check \`shared/MEMORY.md\`.
 
 Before finishing: save durable facts, corrections, lessons, and decisions — one markdown file per fact with \`name:\`/\`description:\` frontmatter (\`MEMORY.md\` regenerates automatically; the description becomes the index line). Check whether an existing memory already covers it before creating a new one; delete memories that turn out to be wrong. Don't store what the repo or chat history already records.
 `;

@@ -13,7 +13,7 @@ export async function installRules({ cwd, project, dryRun }) {
   if (agents === null) {
     if (!dryRun) await writeFile(agentsPath, `# ${project}\n\n${MARKED_SECTION}`);
     lines.push("rules    AGENTS.md created with the memory section");
-  } else if (!/vault/i.test(agents)) {
+  } else if (!/vault|memroam/i.test(agents)) {
     if (!dryRun) await writeFile(agentsPath, `${agents.trimEnd()}\n\n${MARKED_SECTION}`);
     lines.push("rules    AGENTS.md memory section appended");
   } else {
@@ -25,7 +25,7 @@ export async function installRules({ cwd, project, dryRun }) {
   if (claudeMd === null) {
     if (!dryRun) await writeFile(claudeMdPath, "@AGENTS.md\n");
     lines.push("rules    CLAUDE.md created (imports @AGENTS.md)");
-  } else if (!/vault/i.test(claudeMd) && !claudeMd.includes("@AGENTS.md")) {
+  } else if (!/vault|memroam/i.test(claudeMd) && !claudeMd.includes("@AGENTS.md")) {
     if (!dryRun) await writeFile(claudeMdPath, `${claudeMd.trimEnd()}\n\n@AGENTS.md\n`);
     lines.push("rules    CLAUDE.md @AGENTS.md import appended");
   } else {
@@ -51,8 +51,8 @@ export async function uninstallRules({ cwd, project, dryRun }) {
     else if (agents.includes(MEMORY_SECTION)) cleaned = agents.replace(MEMORY_SECTION, "");
     if (cleaned === null) {
       lines.push(
-        /vault/i.test(agents)
-          ? "rules    AGENTS.md mentions the vault but not the standard section — edit by hand"
+        /vault|memroam/i.test(agents)
+          ? "rules    AGENTS.md mentions memroam but not the standard section — edit by hand"
           : "rules    AGENTS.md no memory section",
       );
     } else {
@@ -79,8 +79,8 @@ export async function uninstallRules({ cwd, project, dryRun }) {
   } else if ((agentsDeleted || sectionRemoved) && /\n@AGENTS\.md\s*$/.test(claudeMd)) {
     if (!dryRun) await writeFile(claudeMdPath, claudeMd.replace(/\n+@AGENTS\.md\s*$/, "\n"));
     lines.push("rules    CLAUDE.md @AGENTS.md import removed");
-  } else if (/vault/i.test(claudeMd)) {
-    lines.push("rules    CLAUDE.md mentions the vault — review by hand");
+  } else if (/vault|memroam/i.test(claudeMd)) {
+    lines.push("rules    CLAUDE.md mentions memroam — review by hand");
   } else {
     lines.push("rules    CLAUDE.md unchanged");
   }

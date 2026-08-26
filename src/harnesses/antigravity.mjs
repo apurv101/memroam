@@ -18,7 +18,7 @@ const legacyRulesPath = () => join(configDir(), "rules", "memory-vault.md");
 // loaded (Antigravity's other rule modes are progressive-disclosure).
 const RULES_FILE = `---
 trigger: always_on
-description: Persistent cross-session memory via the vault MCP server
+description: Persistent cross-session memory via the Memroam MCP server
 ---
 
 ${GLOBAL_MARKED_SECTION}`;
@@ -38,7 +38,8 @@ export default {
     const raw = await readFile(mcpPath(), "utf8").catch(() => null);
     let wired = false;
     try {
-      wired = Boolean(JSON.parse(raw).mcpServers?.vault);
+      const servers = JSON.parse(raw).mcpServers;
+      wired = Boolean(servers?.memroam ?? servers?.vault);
     } catch {}
     return [
       `antigravity reads the repo AGENTS.md natively — MCP is global-only, ${

@@ -73,7 +73,7 @@ npx -y memroam install --harness claude,codex   # skip the prompt, pick explicit
 npx -y memroam install --yes                    # skip the prompt, accept detected
 ```
 
-Restart your agent session after installing and approve the `vault` MCP server if prompted.
+Restart your agent session after installing and approve the `memroam` MCP server if prompted (installs from the memory-vault era registered it as `vault`; rerunning `install` renames it).
 
 ## Uninstall from a repository
 
@@ -89,7 +89,7 @@ Removes everything `install` wrote to the repository — the MCP entries, the ru
 npx -y memroam status
 ```
 
-Shows whether the server is up and which store it serves, how the current repository is wired per harness, and every repository recorded by `install` (kept in `~/.memory-vault-connections.json`). If the server is up and the repo is wired but your agent session has no vault tools, the remaining cause is session attachment — `status` prints how to fix it.
+Shows whether the server is up and which store it serves, how the current repository is wired per harness, and every repository recorded by `install` (kept in `~/.memory-vault-connections.json`). If the server is up and the repo is wired but your agent session has no memroam tools, the remaining cause is session attachment — `status` prints how to fix it.
 
 ## Import native memory, project to memoryless harnesses
 
@@ -153,7 +153,7 @@ POST /mcp            whole-vault access
 For example, a manual Claude Code connection is:
 
 ```sh
-claude mcp add --transport http --scope project vault http://localhost:8787/mcp/my-project
+claude mcp add --transport http --scope project memroam http://localhost:8787/mcp/my-project
 ```
 
 ## Memory format

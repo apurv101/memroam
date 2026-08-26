@@ -16,6 +16,18 @@ export async function dshProfiles() {
   return profiles.sort();
 }
 
+// Matches our entry id under either name — memory-vault-era installs wrote
+// `id: mcp-vault`.
+const OUR_ID = /id: mcp-(?:memroam|vault)\b/;
+
+// Remove our entry from a Cordis patch: the insert-wrapped shape (ours only
+// ever holds the memroam entry) and the legacy bare-id shape from older
+// installs, under either id.
+const stripEntries = (patch) =>
+  patch
+    .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (OUR_ID.test(block) ? "\n" : block))
+    .replace(/(?:^|\n)- id: mcp-(?:memroam|vault)\n(?:[ \t].*(?:\n|$))*/g, "\n");
+
 export default {
   key: "dsh",
   title: "DeepSeek Harness",
@@ -28,14 +40,21 @@ export default {
     const patchPath = join(cwd, "dsh-cordis.patch.yml");
     // New plugins are added via `- insert:`; a bare `- id:` entry only
     // overrides an existing one and is silently skipped otherwise.
-    const patchEntry = `- insert:\n    - id: mcp-vault\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: vault\n        transport: streamable-http\n        url: ${url}\n`;
-    const patchContent = `# dsh Cordis patch — load the Memroam MCP server (project "${project}").\n# Per-session:  dsh --patch ./dsh-cordis.patch.yml [--profile <name>] ["your task"]\n# Permanent:    copy the entry below into ~/.dsh/profiles/<name>/cordis.patch.yml\n# The vault server must be running (npx memroam install starts it if down).\n${patchEntry}`;
+    const patchEntry = `- insert:\n    - id: mcp-memroam\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: memroam\n        transport: streamable-http\n        url: ${url}\n`;
+    const patchContent = `# dsh Cordis patch — load the Memroam MCP server (project "${project}").\n# Per-session:  dsh --patch ./dsh-cordis.patch.yml [--profile <name>] ["your task"]\n# Permanent:    copy the entry below into ~/.dsh/profiles/<name>/cordis.patch.yml\n# The memroam server must be running (npx memroam install starts it if down).\n${patchEntry}`;
     const patch = await readFile(patchPath, "utf8").catch(() => null);
-    if (patch === patchContent || (patch !== null && patch.includes("id: mcp-vault") && patch.includes(`url: ${url}`))) {
+    if (patch === patchContent || (patch !== null && patch.includes("id: mcp-memroam") && patch.includes(`url: ${url}`))) {
       return ["dsh      dsh-cordis.patch.yml unchanged — run: dsh --patch ./dsh-cordis.patch.yml"];
     }
+    if (patch !== null && patch.includes("id: mcp-memroam")) {
+      return [`dsh      dsh-cordis.patch.yml already has a memroam entry with a different url — update it by hand to ${url}`];
+    }
     if (patch !== null && patch.includes("id: mcp-vault")) {
-      return [`dsh      dsh-cordis.patch.yml already has a vault entry with a different url — update it by hand to ${url}`];
+      // Legacy entry from the memory-vault era — replace it with the renamed one.
+      const base = stripEntries(patch).trim();
+      const onlyComments = base.split("\n").every((l) => l.trim() === "" || l.trim().startsWith("#"));
+      if (!dryRun) await writeFile(patchPath, onlyComments ? patchContent : `${base}\n\n${patchEntry}`);
+      return ["dsh      dsh-cordis.patch.yml updated (renamed vault → memroam) — run: dsh --patch ./dsh-cordis.patch.yml"];
     }
     if (patch !== null) {
       if (!dryRun) await writeFile(patchPath, `${patch.trimEnd()}\n\n${patchEntry}`);
@@ -48,17 +67,15 @@ export default {
     const patchPath = join(cwd, "dsh-cordis.patch.yml");
     const patch = await readFile(patchPath, "utf8").catch(() => null);
     if (patch === null) return ["dsh      dsh-cordis.patch.yml not present"];
-    if (!patch.includes("id: mcp-vault")) return ["dsh      dsh-cordis.patch.yml no vault entry"];
-    const cleaned = patch
-      .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
-      .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
+    if (!OUR_ID.test(patch)) return ["dsh      dsh-cordis.patch.yml no memroam entry"];
+    const cleaned = stripEntries(patch);
     const onlyComments = cleaned.split("\n").every((l) => l.trim() === "" || l.trim().startsWith("#"));
     if (onlyComments) {
       if (!dryRun) await rm(patchPath);
       return ["dsh      dsh-cordis.patch.yml deleted"];
     }
     if (!dryRun) await writeFile(patchPath, cleaned.trimEnd() + "\n");
-    return ["dsh      dsh-cordis.patch.yml vault entry removed"];
+    return ["dsh      dsh-cordis.patch.yml memroam entry removed"];
   },
   // Global dsh wiring: the ritual goes in ~/.dsh/AGENTS.md (loaded above
   // profiles, whatever profile boots), and a stdio mount is fanned into
@@ -74,13 +91,17 @@ export default {
     // (and warns + skips when none exists); NEW plugins must be added via an
     // `- insert:` block.
     const entry =
-      `- insert:\n    - id: mcp-vault\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: vault\n        transport: stdio\n` +
+      `- insert:\n    - id: mcp-memroam\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: memroam\n        transport: stdio\n` +
       `        command: ${JSON.stringify(command)}\n        args: ${JSON.stringify(args)}\n        env:\n          MEMORY_DIR: ${JSON.stringify(store)}\n`;
     for (const profile of await dshProfiles()) {
       const patchPath = join(homedir(), ".dsh", "profiles", profile, "cordis.patch.yml");
       const patch = await readFile(patchPath, "utf8").catch(() => null);
-      if (patch !== null && patch.includes("id: mcp-vault")) {
-        lines.push(`dsh      profiles/${profile} already has a vault entry — left as is`);
+      if (patch !== null && patch.includes("id: mcp-memroam")) {
+        lines.push(`dsh      profiles/${profile} already has a memroam entry — left as is`);
+      } else if (patch !== null && patch.includes("id: mcp-vault")) {
+        const base = stripEntries(patch).trim();
+        if (!dryRun) await writeFile(patchPath, `${base ? base + "\n\n" : ""}${entry}`);
+        lines.push(`dsh      profiles/${profile}/cordis.patch.yml updated (renamed vault → memroam, stdio mount)`);
       } else {
         if (!dryRun) await writeFile(patchPath, `${patch === null ? "" : patch.trimEnd() + "\n\n"}${entry}`);
         lines.push(`dsh      profiles/${profile}/cordis.patch.yml ${patch === null ? "created" : "updated"} (stdio mount)`);
@@ -94,17 +115,13 @@ export default {
     for (const profile of await dshProfiles()) {
       const patchPath = join(homedir(), ".dsh", "profiles", profile, "cordis.patch.yml");
       const patch = await readFile(patchPath, "utf8").catch(() => null);
-      if (patch === null || !patch.includes("id: mcp-vault")) {
-        lines.push(`dsh      profiles/${profile} no vault entry`);
+      if (patch === null || !OUR_ID.test(patch)) {
+        lines.push(`dsh      profiles/${profile} no memroam entry`);
         continue;
       }
-      // Remove the insert-wrapped shape (ours only ever holds the vault
-      // entry) and the legacy bare-id shape from older installs.
-      const cleaned = patch
-        .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
-        .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
+      const cleaned = stripEntries(patch);
       if (!dryRun) await writeFile(patchPath, cleaned.trimEnd() + "\n");
-      lines.push(`dsh      profiles/${profile} vault entry removed`);
+      lines.push(`dsh      profiles/${profile} memroam entry removed`);
     }
     return lines;
   },

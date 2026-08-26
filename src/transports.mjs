@@ -24,7 +24,7 @@ export const server = createServer(async (req, res) => {
     res.end(
       `memroam (local) — store: ${MEMORY_DIR}\n` +
         `MCP endpoints: POST /mcp/<project> (project scope), POST /mcp (whole vault)\n` +
-        `Connect (per repo): claude mcp add --transport http --scope project vault http://localhost:${PORT}/mcp/<project>\n`,
+        `Connect (per repo): claude mcp add --transport http --scope project memroam http://localhost:${PORT}/mcp/<project>\n`,
     );
     return;
   }

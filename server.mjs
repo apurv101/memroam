@@ -37,7 +37,7 @@
 //   VAULT_PORT   listen port on 127.0.0.1 (default 8787)
 //
 // MCP: stateless Streamable HTTP — POST one JSON-RPC message per request.
-// Connect (per repo): claude mcp add --transport http --scope project vault http://localhost:8787/mcp/<project>
+// Connect (per repo): claude mcp add --transport http --scope project memroam http://localhost:8787/mcp/<project>
 //
 // This file is the bin entry; the implementation lives in src/:
 //   store.mjs         the memory engine — path sandbox + the six commands

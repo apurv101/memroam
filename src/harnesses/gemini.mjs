@@ -13,7 +13,7 @@ export default {
   // repo level addresses the HTTP server via Gemini's httpUrl field.
   async install({ cwd, url, dryRun }) {
     const status = await mergeMcpJson(join(cwd, ".gemini", "settings.json"), { httpUrl: url }, dryRun);
-    return [`gemini   .gemini/settings.json ${status} (vault → ${url})`];
+    return [`gemini   .gemini/settings.json ${status} (memroam → ${url})`];
   },
   async uninstall({ cwd, dryRun }) {
     const status = await removeMcpJson(join(cwd, ".gemini", "settings.json"), dryRun);
