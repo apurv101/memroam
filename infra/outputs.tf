@@ -1,5 +1,10 @@
 output "service_url" {
-  description = "Public HTTPS URL of the service — the MCP endpoint base"
+  description = "Public HTTPS base of the service — the MCP endpoint is <service_url>/mcp"
+  value       = "https://${var.alt_domain}"
+}
+
+output "lambda_origin_url" {
+  description = "Raw Lambda function URL (CloudFront origin — not for clients)"
   value       = aws_lambda_function_url.server.function_url
 }
 
