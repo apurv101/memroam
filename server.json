@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.memroam/memroam",
   "title": "Memroam",
-  "description": "Portable AI memory that roams with you across models and harnesses — plain markdown you own, per-project spaces plus a shared layer.",
+  "description": "Portable AI memory that roams with you across models and harnesses - plain markdown you own.",
   "version": "0.3.1",
   "websiteUrl": "https://memroam.com",
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://memoryvault.click/mcp"
+      "url": "https://memroam.com/mcp"
     }
   ],
   "packages": [
