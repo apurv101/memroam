@@ -1,6 +1,6 @@
 {
   "name": "memroam",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "mcpName": "com.memroam/memroam",
   "description": "Portable AI memory over a local folder or hosted vault, served via MCP — your memory roams with you across models and harnesses (Claude, ChatGPT, Codex, Cursor). Per-project spaces plus a shared layer, stored as plain markdown you own.",
   "type": "module",

@@ -3,7 +3,7 @@
   "name": "com.memroam/memroam",
   "title": "Memroam",
   "description": "Portable AI memory that roams with you across models and harnesses - plain markdown you own.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "websiteUrl": "https://memroam.com",
   "remotes": [
     {
@@ -16,7 +16,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "memroam",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
