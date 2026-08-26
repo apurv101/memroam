@@ -62,10 +62,15 @@ export const authorizationServerMetadata = (base) =>
 
 // ── Dynamic client registration ──────────────────────────────────────────────
 
+// https, loopback http, or a private-use scheme (RFC 8252 §7.1 — native apps
+// like Cursor register e.g. cursor://…/callback). Only plain http to a
+// non-loopback host is rejected.
 const validRedirect = (u) => {
   try {
     const url = new URL(u);
-    return url.protocol === "https:" || url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (url.protocol === "https:") return true;
+    if (url.protocol === "http:") return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return url.protocol !== "";
   } catch {
     return false;
   }
@@ -74,7 +79,7 @@ const validRedirect = (u) => {
 export async function register(body) {
   const uris = body?.redirect_uris;
   if (!Array.isArray(uris) || uris.length === 0 || !uris.every(validRedirect)) {
-    return oauthError(400, "invalid_redirect_uri", "redirect_uris must be https (or localhost) URLs");
+    return oauthError(400, "invalid_redirect_uri", "redirect_uris must be https, loopback http, or private-scheme URLs");
   }
   const client = {
     client_id: randToken("mvc_", 16),
