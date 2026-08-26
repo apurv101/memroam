@@ -11,7 +11,7 @@ import { readConnections, readRegistry } from "./registry.mjs";
 
 export async function status() {
   const cwd = process.cwd();
-  console.log("memory-vault status\n");
+  console.log("memroam status\n");
 
   let banner = null;
   try {
@@ -21,7 +21,7 @@ export async function status() {
   console.log(
     banner !== null
       ? `  server   up on port ${PORT} — ${banner}`
-      : `  server   down (port ${PORT}) — start it: npx memory-vault install (or serve)`,
+      : `  server   down (port ${PORT}) — start it: npx memroam install (or serve)`,
   );
 
   console.log(`\n  this repo (${cwd}):`);
@@ -81,8 +81,19 @@ export async function status() {
   console.log(
     `  gemini   ~/.gemini/settings.json ${await mcpWired(join(home, ".gemini", "settings.json"))} · GEMINI.md ${await rulesWired(join(home, ".gemini", "GEMINI.md"))}`,
   );
+  // Antigravity rule file: new installs write rules/memroam.md; installs from
+  // the memory-vault era wrote rules/memory-vault.md — report whichever exists.
+  const agRules = join(home, ".gemini", "config", "rules");
+  const agNew = await rulesWired(join(agRules, "memroam.md"));
+  const agOld = await rulesWired(join(agRules, "memory-vault.md"));
+  const agRulesState =
+    agNew !== "not present"
+      ? `rules/memroam.md ${agNew}`
+      : agOld !== "not present"
+        ? `rules/memory-vault.md ${agOld} (legacy name)`
+        : "rules/memroam.md not present";
   console.log(
-    `  antigravity ~/.gemini/config/mcp_config.json ${await mcpWired(join(home, ".gemini", "config", "mcp_config.json"))} · rules/memory-vault.md ${await rulesWired(join(home, ".gemini", "config", "rules", "memory-vault.md"))}`,
+    `  antigravity ~/.gemini/config/mcp_config.json ${await mcpWired(join(home, ".gemini", "config", "mcp_config.json"))} · ${agRulesState}`,
   );
   if (registry.store) console.log(`  store    ${registry.store}`);
   const spaces = Object.entries(registry.spaces ?? {});

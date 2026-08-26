@@ -10,10 +10,10 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "202
 // ignore them. The URLs are served by the hosted tier and resolve for local
 // (stdio) sessions too — the logo lives at the public domain either way.
 export const SERVER_INFO = {
-  name: "memory-vault",
-  title: "Memory Vault",
+  name: "memroam",
+  title: "Memroam",
   version: "0.3.1",
-  websiteUrl: "https://memoryvault.click",
+  websiteUrl: "https://memroam.com",
   icons: [
     { src: "https://memoryvault.click/icon.svg", mimeType: "image/svg+xml", sizes: ["any"] },
     { src: "https://memoryvault.click/icon.png", mimeType: "image/png", sizes: ["256x256"] },

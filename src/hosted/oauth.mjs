@@ -198,7 +198,7 @@ async function bootstrapIfEmpty(user) {
     token,
     method: "PUT",
     body: {
-      message: "memory-vault: initialize store",
+      message: "memroam: initialize store",
       content: Buffer.from('{"format":1}\n').toString("base64"),
     },
   });
