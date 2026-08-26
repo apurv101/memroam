@@ -4,12 +4,10 @@
 
 import { createServer } from "node:http";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
-import { JsonRpcError, MEMORY_DIR, PORT, callTool, setMemoryDir } from "./store.mjs";
+import { JsonRpcError, MEMORY_DIR, PORT, callTool, defaultStoreDir, setMemoryDir } from "./store.mjs";
 import { instructionsFor } from "./instructions.mjs";
 import { makeDispatch } from "./dispatch.mjs";
 import { projectSlug, readRegistry, resolveSpace } from "./registry.mjs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const dispatch = makeDispatch({ callTool, instructions: instructionsFor });
@@ -24,7 +22,7 @@ export const server = createServer(async (req, res) => {
   if (url.pathname === "/" && req.method === "GET") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(
-      `memory-vault (local) — store: ${MEMORY_DIR}\n` +
+      `memroam (local) — store: ${MEMORY_DIR}\n` +
         `MCP endpoints: POST /mcp/<project> (project scope), POST /mcp (whole vault)\n` +
         `Connect (per repo): claude mcp add --transport http --scope project vault http://localhost:${PORT}/mcp/<project>\n`,
     );
@@ -85,7 +83,7 @@ export const server = createServer(async (req, res) => {
 
 export async function stdioServe() {
   const registry = await readRegistry();
-  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? defaultStoreDir());
   await mkdir(MEMORY_DIR, { recursive: true });
   const cwd = process.cwd();
 
@@ -132,7 +130,7 @@ export async function stdioServe() {
   // instructions may briefly describe the cwd-derived scope — tool calls use
   // whatever the scope is at call time, and MEMORY.md always shows the truth.
   let clientSupportsRoots = false;
-  const ROOTS_ID = "memory-vault:roots";
+  const ROOTS_ID = "memroam:roots";
   const requestRoots = () => {
     if (clientSupportsRoots && !pinned) send({ id: ROOTS_ID, method: "roots/list" });
   };

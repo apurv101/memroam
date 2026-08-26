@@ -22,6 +22,12 @@ variable "domain" {
   default     = "memoryvault.click"
 }
 
+variable "alt_domain" {
+  description = "Additional domain on the same distribution (registered externally; zone managed here)"
+  type        = string
+  default     = "memroam.com"
+}
+
 # Path to the built server zip; `make deploy`/`make plan` build it via the
 # package target and pass it as TF_VAR_package_zip.
 variable "package_zip" {

@@ -9,10 +9,17 @@ data "aws_route53_zone" "main" {
   name = var.domain
 }
 
+# memroam.com is registered at an external registrar; the zone lives here and
+# the registrar's NS records must point at this zone's name servers.
+resource "aws_route53_zone" "alt" {
+  name = var.alt_domain
+}
+
 resource "aws_acm_certificate" "main" {
-  provider          = aws.us_east_1
-  domain_name       = var.domain
-  validation_method = "DNS"
+  provider                  = aws.us_east_1
+  domain_name               = var.domain
+  subject_alternative_names = [var.alt_domain]
+  validation_method         = "DNS"
 
   lifecycle {
     create_before_destroy = true
@@ -27,7 +34,7 @@ resource "aws_route53_record" "cert_validation" {
       record = dvo.resource_record_value
     }
   }
-  zone_id = data.aws_route53_zone.main.zone_id
+  zone_id = each.key == var.domain ? data.aws_route53_zone.main.zone_id : aws_route53_zone.alt.zone_id
   name    = each.value.name
   type    = each.value.type
   records = [each.value.record]
@@ -64,7 +71,7 @@ resource "aws_cloudfront_distribution" "main" {
   enabled         = true
   is_ipv6_enabled = true
   comment         = "memory-vault hosted tier"
-  aliases         = [var.domain]
+  aliases         = [var.domain, var.alt_domain]
   price_class     = "PriceClass_100"
 
   origin {
@@ -131,6 +138,30 @@ resource "aws_route53_record" "apex_a" {
 resource "aws_route53_record" "apex_aaaa" {
   zone_id = data.aws_route53_zone.main.zone_id
   name    = var.domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "alt_apex_a" {
+  zone_id = aws_route53_zone.alt.zone_id
+  name    = var.alt_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "alt_apex_aaaa" {
+  zone_id = aws_route53_zone.alt.zone_id
+  name    = var.alt_domain
   type    = "AAAA"
 
   alias {

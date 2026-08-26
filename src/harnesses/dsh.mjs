@@ -29,7 +29,7 @@ export default {
     // New plugins are added via `- insert:`; a bare `- id:` entry only
     // overrides an existing one and is silently skipped otherwise.
     const patchEntry = `- insert:\n    - id: mcp-vault\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: vault\n        transport: streamable-http\n        url: ${url}\n`;
-    const patchContent = `# dsh Cordis patch — load the memory-vault MCP server (project "${project}").\n# Per-session:  dsh --patch ./dsh-cordis.patch.yml [--profile <name>] ["your task"]\n# Permanent:    copy the entry below into ~/.dsh/profiles/<name>/cordis.patch.yml\n# The vault server must be running (npx memory-vault install starts it if down).\n${patchEntry}`;
+    const patchContent = `# dsh Cordis patch — load the Memroam MCP server (project "${project}").\n# Per-session:  dsh --patch ./dsh-cordis.patch.yml [--profile <name>] ["your task"]\n# Permanent:    copy the entry below into ~/.dsh/profiles/<name>/cordis.patch.yml\n# The vault server must be running (npx memroam install starts it if down).\n${patchEntry}`;
     const patch = await readFile(patchPath, "utf8").catch(() => null);
     if (patch === patchContent || (patch !== null && patch.includes("id: mcp-vault") && patch.includes(`url: ${url}`))) {
       return ["dsh      dsh-cordis.patch.yml unchanged — run: dsh --patch ./dsh-cordis.patch.yml"];

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Memory Vault — Claude-style memory primitives over a local folder, via MCP.
+// Memroam — Claude-style memory primitives over a local folder, via MCP.
 //
-//   npx memory-vault install --global — wire every harness on this machine to
+//   npx memroam install --global — wire every harness on this machine to
 //                                    the vault once, user-globally: a stdio MCP
 //                                    registration per harness plus the memory
 //                                    ritual in its global rules file. Sessions
@@ -9,15 +9,15 @@
 //                                    per-repo setup; the stdio server derives
 //                                    the project space from its working
 //                                    directory automatically.
-//   npx memory-vault stdio         — MCP over stdin/stdout (what the global
+//   npx memroam stdio         — MCP over stdin/stdout (what the global
 //                                    registrations run; spawned by the harness
 //                                    in the session's directory)
 //   node server.mjs                (or: npm start) — serve the vault over HTTP
-//   npx memory-vault install       — wire the current repo to the vault
+//   npx memroam install       — wire the current repo to the vault
 //                                    (starts the server if down, lets you pick
 //                                    harnesses, writes each one's MCP config +
 //                                    the shared rules files; alias: connect)
-//   npx memory-vault uninstall     — undo install for the repo (--global: undo
+//   npx memroam uninstall     — undo install for the repo (--global: undo
 //                                    install --global); memories are never
 //                                    touched (alias: disconnect)
 //

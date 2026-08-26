@@ -4,10 +4,20 @@
 import { mkdir, readdir, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
 export const PORT = Number(process.env.VAULT_PORT ?? 8787);
+
+// Default store location. Installs from the memory-vault era keep their
+// existing ~/.memory-vault store; fresh machines get ~/.memroam. MEMORY_DIR
+// (and the registry's recorded store path) always take precedence — this is
+// only the last-resort default.
+export function defaultStoreDir() {
+  const legacy = join(homedir(), ".memory-vault");
+  return existsSync(legacy) ? legacy : join(homedir(), ".memroam");
+}
 
 // Several processes can share the store (stdio instances, the HTTP server),
 // so every write lands via temp-file + rename — a reader never sees a torn file.
@@ -33,7 +43,7 @@ export class JsonRpcError extends Error {
 const scopeDir = (scope) => join(MEMORY_DIR, scope);
 let SHARED_DIR = join(MEMORY_DIR, "shared");
 
-// stdio mode resolves its store at startup (env → registry → ~/.memory-vault)
+// stdio mode resolves its store at startup (env → registry → defaultStoreDir())
 // rather than trusting the ./memory default, which is only right for `serve`
 // run from the vault repo itself.
 export function setMemoryDir(dir) {
