@@ -12,11 +12,11 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "202
 export const SERVER_INFO = {
   name: "memroam",
   title: "Memroam",
-  version: "0.3.1",
+  version: "0.4.0",
   websiteUrl: "https://memroam.com",
   icons: [
-    { src: "https://memoryvault.click/icon.svg", mimeType: "image/svg+xml", sizes: ["any"] },
-    { src: "https://memoryvault.click/icon.png", mimeType: "image/png", sizes: ["256x256"] },
+    { src: "https://memroam.com/icon.svg", mimeType: "image/svg+xml", sizes: ["any"] },
+    { src: "https://memroam.com/icon.png", mimeType: "image/png", sizes: ["256x256"] },
   ],
 };
 

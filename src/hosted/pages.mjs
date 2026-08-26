@@ -26,7 +26,7 @@ export const consentPage = ({ clientName, repoFullName, defaultSpace, authreqId,
      Memroam vault, stored in your GitHub repository <strong>${esc(repoFullName)}</strong>
      (default space <code>${esc(defaultSpace)}</code>).</p>
      <p class="muted">Every change it makes becomes a commit in that repository. You can revoke access at
-     any time by uninstalling the memory-vault GitHub App from the repository.</p>
+     any time by uninstalling the memroam GitHub App from the repository.</p>
      <div class="actions">
        <form method="POST" action="/approve">
          <input type="hidden" name="authreq" value="${esc(authreqId)}">

@@ -194,7 +194,7 @@ async function bootstrapIfEmpty(user) {
   if (!meta.ok) return;
   const ref = await ghApi(`/repos/${owner}/${repo}/git/ref/${encodeURIComponent(`heads/${meta.json.default_branch}`)}`, { token });
   if (ref.status !== 404 && ref.status !== 409) return; // repo already has commits
-  await ghApi(`/repos/${owner}/${repo}/contents/${encodeURIComponent(".memory-vault")}`, {
+  await ghApi(`/repos/${owner}/${repo}/contents/${encodeURIComponent(".memroam")}`, {
     token,
     method: "PUT",
     body: {
