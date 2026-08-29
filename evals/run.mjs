@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 // Memory Vault eval harness — Stage 0+.
 //
-//   node evals/run.mjs [--suite micro] [--model sonnet] [--judge-model haiku]
-//                      [--baselines] [--no-cache] [--keep-vault] [--bare]
+//   node evals/run.mjs [--suite micro] [--harness claude|codex] [--memory vault]
+//                      [--model sonnet] [--judge-model haiku] [--baselines]
+//                      [--no-cache] [--keep-vault] [--bare]
+//                      [--provider dashscope --base-url URL --api-key-env NAME
+//                       [--wire-api responses|chat]]
+//
+// Harness drivers live in evals/drivers/ (one file per CLI, shared contract).
+// Judge always runs on the claude driver regardless of --harness. Run
+// `node evals/drivers/smoke.mjs` once per new harness before matrix work.
+//
+// Results land in evals/results/<harness>-<memory>-<model>/ — one folder per
+// matrix cell (e.g. claude-vault-sonnet/), each with its own .cache/.
 //
 // One run: spawn server.mjs on a temp MEMORY_DIR → ingest each conversation's
 // sessions in order via headless `claude -p` with only the vault MCP tools →
@@ -28,6 +38,10 @@ import { spawn, execSync } from "node:child_process";
 import {
   mkdir, mkdtemp, readFile, writeFile, readdir, rm, appendFile, stat, cp,
 } from "node:fs/promises";
+import { drivers, loadDotEnv, resolveBackend } from "./drivers/index.mjs";
+import { approvalPin } from "./drivers/codex.mjs";
+
+loadDotEnv(); // evals/.env — endpoints/keys per provider; real env vars win
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -51,7 +65,19 @@ const opt = (name, dflt) => {
 
 const cfg = {
   suite: opt("suite", "micro"),
-  model: opt("model", "sonnet"),
+  harness: opt("harness", "claude"), // QA/ingest harness; judge always runs on claude
+  memory: opt("memory", "vault"),    // memory system under test: vault | native (native TBD)
+  // Model aliases are harness-specific: "sonnet" only means something to claude.
+  // Other harnesses default to their CLI's own default model (null = omit -m).
+  model: opt("model", null),
+  // Backend the QA/ingest model is served from. "native" = the harness's own
+  // account (subscription / CODEX_HOME auth). Anything else needs --base-url:
+  // claude gets it as ANTHROPIC_BASE_URL, codex as a model_providers entry.
+  // The judge is never routed through a custom backend.
+  provider: opt("provider", "native"),
+  baseUrl: opt("base-url", null),
+  apiKeyEnv: opt("api-key-env", null), // env VAR NAME holding the key — value never stored
+  wireApi: opt("wire-api", "responses"), // codex custom-provider wire protocol
   judgeModel: opt("judge-model", "haiku"),
   baselines: flag("baselines"),
   noCache: flag("no-cache"),
@@ -64,12 +90,39 @@ const cfg = {
   judgeTimeoutMs: Number(opt("judge-timeout", 120_000)),
 };
 
-const configTag = `${cfg.suite}${cfg.conv ? `-c${cfg.conv}` : ""}-${cfg.model}${cfg.bare ? "-bare" : ""}`;
+if (!drivers[cfg.harness]) throw new Error(`unknown --harness ${cfg.harness} (have: ${Object.keys(drivers).join(", ")})`);
+if (cfg.memory !== "vault") throw new Error(`--memory ${cfg.memory} not implemented yet (only "vault")`);
+if (cfg.baseUrl && cfg.provider === "native")
+  throw new Error("--base-url requires --provider <tag> (a short label like dashscope/vast for cell naming)");
+// A custom provider needs an EXPLICIT --model — checked before the claude
+// alias default below, so `--provider dashscope` can't silently send "sonnet"
+// to a backend that has no such model.
+if (cfg.provider !== "native" && !cfg.model)
+  throw new Error(`--provider ${cfg.provider} requires an explicit --model (the backend won't have the CLI's default)`);
+if (cfg.harness === "claude") cfg.model ??= "sonnet";
+// Fill baseUrl/apiKeyEnv from the evals/.env provider profile when not given
+// explicitly (throws if the provider has no URL for this harness's wire format).
+Object.assign(cfg, resolveBackend({ provider: cfg.provider, harness: cfg.harness, baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv }));
+if (cfg.apiKeyEnv && !process.env[cfg.apiKeyEnv])
+  throw new Error(`--api-key-env ${cfg.apiKeyEnv}: that env var is not set`);
+
+// One folder per matrix cell — <harness>-<memory>-<model>/ — holding that
+// cell's results JSONL, vault snapshots, and its own resume cache. Deleting a
+// cell folder cleanly forgets the run.
+const harnessTag = cfg.harness === "claude" ? "" : `-${cfg.harness}`;
+const modelTag = (cfg.model ?? "default").replace(/[^a-zA-Z0-9._-]/g, "_");
+const providerTag = cfg.provider === "native" ? "" : `-${cfg.provider.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+const cellTag = `${cfg.harness}-${cfg.memory}-${modelTag}${providerTag}`;
+const CELL_DIR = join(RESULTS_DIR, cellTag);
+const configTag = `${cfg.suite}${cfg.conv ? `-c${cfg.conv}` : ""}${harnessTag}-${modelTag}${providerTag}${cfg.bare ? "-bare" : ""}`;
 const configHash = createHash("sha256")
-  .update(JSON.stringify({ suite: cfg.suite, model: cfg.model, judge: cfg.judgeModel, bare: cfg.bare, PROMPTS_VERSION }))
+  .update(JSON.stringify({ suite: cfg.suite, model: cfg.model, judge: cfg.judgeModel, bare: cfg.bare, PROMPTS_VERSION,
+    ...(cfg.harness !== "claude" ? { harness: cfg.harness } : {}),
+    ...(cfg.memory !== "vault" ? { memory: cfg.memory } : {}),
+    ...(cfg.provider !== "native" ? { provider: cfg.provider, baseUrl: cfg.baseUrl } : {}) }))
   .digest("hex").slice(0, 12);
-const CACHE_DIR = join(RESULTS_DIR, ".cache", configHash);
-const RESULTS_FILE = join(RESULTS_DIR, `${configTag}.jsonl`);
+const CACHE_DIR = join(CELL_DIR, ".cache", configHash);
+const RESULTS_FILE = join(CELL_DIR, `${configTag}.jsonl`);
 
 // ── Suite loading ─────────────────────────────────────────────────────────────
 
@@ -141,58 +194,32 @@ async function spawnServer(memoryDir) {
   throw new Error("server did not come up");
 }
 
-// ── Headless claude runner ────────────────────────────────────────────────────
+// ── Headless agent runners (per-harness drivers in ./drivers/) ────────────────
 
-const VAULT_TOOLS = ["view", "create", "str_replace", "insert", "delete", "rename"]
+// Full tool surface the server exposes (src/store.mjs). The read-only subset
+// matters: the server's own instructions advertise `search`, and a model that
+// keeps calling a denied tool can spin until timeout (seen with qwen via
+// DashScope; sonnet happened to stick to `view`).
+const VAULT_TOOLS = ["view", "search", "create", "str_replace", "insert", "delete", "rename"]
   .map((t) => `mcp__vault__${t}`);
+const VAULT_READ_TOOLS = ["mcp__vault__view", "mcp__vault__search"];
 
 let workDir; // sterile cwd shared by all calls — no project CLAUDE.md, no .mcp.json
 
-async function runClaude({ prompt, mcpUrl, allowedTools, model, timeoutMs, label }) {
-  const args = [
-    "-p",
-    "--output-format", "json",
-    "--model", model,
-    "--tools", "",              // no built-in tools; MCP tools only
-    "--no-session-persistence",
-  ];
-  if (cfg.bare) args.push("--bare");
-  const mcpFile = join(workDir, `mcp-${label.replace(/[^a-z0-9-]/gi, "_")}.json`);
-  const mcpServers = mcpUrl ? { vault: { type: "http", url: mcpUrl } } : {};
-  await writeFile(mcpFile, JSON.stringify({ mcpServers }));
-  args.push("--mcp-config", mcpFile, "--strict-mcp-config");
-  if (allowedTools?.length) args.push("--allowedTools", allowedTools.join(","));
-
-  const started = Date.now();
-  const out = await new Promise((resolvePromise, reject) => {
-    const proc = spawn("claude", args, { cwd: workDir, env: process.env });
-    let stdout = "", stderr = "";
-    const timer = setTimeout(() => { proc.kill("SIGKILL"); reject(new Error(`${label}: timeout after ${timeoutMs}ms`)); }, timeoutMs);
-    proc.stdout.on("data", (d) => (stdout += d));
-    proc.stderr.on("data", (d) => (stderr += d));
-    proc.on("error", (e) => { clearTimeout(timer); reject(e); });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0 && !stdout.trim()) return reject(new Error(`${label}: exit ${code}: ${stderr.slice(0, 500)}`));
-      resolvePromise(stdout);
-    });
-    proc.stdin.write(prompt);
-    proc.stdin.end();
-  });
-
-  let parsed;
-  try { parsed = JSON.parse(out); }
-  catch { throw new Error(`${label}: unparseable claude output: ${out.slice(0, 300)}`); }
-  return {
-    text: parsed.result ?? "",
-    isError: Boolean(parsed.is_error),
-    numTurns: parsed.num_turns,
-    costUsd: parsed.total_cost_usd,
-    usage: parsed.usage,
-    models: Object.keys(parsed.modelUsage ?? {}), // resolved model IDs, not aliases
-    durationMs: Date.now() - started,
-  };
-}
+// QA + ingest go through the selected harness, routed to --base-url when set;
+// the judge is the measurement instrument and is held constant across cells:
+// always the claude driver, always subscription auth (never --bare, so a bare
+// QA run can't silently move judging onto API billing), env scrubbed of any
+// custom-backend routing even if the user exported it shell-wide.
+const runAgent = (o) => drivers[cfg.harness].run({
+  bare: cfg.bare, workDir,
+  baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv, wireApi: cfg.wireApi,
+  ...o,
+});
+const judgeEnv = { ...process.env };
+delete judgeEnv.ANTHROPIC_BASE_URL;
+delete judgeEnv.ANTHROPIC_AUTH_TOKEN;
+const runJudge = (o) => drivers.claude.run({ bare: false, workDir, env: judgeEnv, ...o });
 
 // ── Prompts (versioned via PROMPTS_VERSION) ───────────────────────────────────
 
@@ -305,10 +332,20 @@ const emit = async (rec) => { out.push(rec); await appendFile(RESULTS_FILE, JSON
 const git = (cmd) => { try { return execSync(cmd, { cwd: REPO_DIR }).toString().trim(); } catch { return "unknown"; } };
 
 async function main() {
-  await mkdir(RESULTS_DIR, { recursive: true });
+  await mkdir(CELL_DIR, { recursive: true });
   await mkdir(CACHE_DIR, { recursive: true });
   await rm(RESULTS_FILE, { force: true }); // one file per config; rerun replaces it
   workDir = await mkdtemp(join(tmpdir(), "vault-eval-work-"));
+
+  // Fail fast if the backend endpoint is unreachable (e.g. the local LiteLLM
+  // shim isn't running) instead of erroring per-call mid-run.
+  if (cfg.baseUrl) {
+    try { await fetch(cfg.baseUrl, { signal: AbortSignal.timeout(5000) }); }
+    catch (e) {
+      if (e?.cause?.code === "ECONNREFUSED" || e?.name === "TimeoutError")
+        throw new Error(`backend ${cfg.baseUrl} unreachable — if this is a local shim, start it first (see evals/.env)`);
+    }
+  }
 
   const suite = await loadSuite(cfg.suite);
   if (cfg.conv) {
@@ -319,18 +356,39 @@ async function main() {
   }
   const today = new Date().toISOString().slice(0, 10);
 
+  const codexPin = cfg.harness === "codex" ? await approvalPin() : null;
+  const contamination = [
+    cfg.bare ? "QA bare mode (clean room)" : "subscription mode: global ~/.claude/CLAUDE.md auto-loads into eval agents",
+    "judge: always claude subscription mode (non-bare), custom-backend env scrubbed",
+    ...(cfg.provider !== "native" ? [`QA model served by ${cfg.provider} (${cfg.baseUrl})`] : []),
+    ...(cfg.harness === "codex" ? [
+      "codex: --ignore-user-config clean room (auth from CODEX_HOME)",
+      "codex: shell tool active in read-only sandbox with full-disk reads; each call gets a private empty cwd, but disk-wide exploration is a residual risk",
+    ] : []),
+    ...(codexPin?.dangerous ? ["codex: MCP approval pin DISABLES the codex sandbox (--dangerously-bypass-approvals-and-sandbox)"] : []),
+  ].join("; ");
   await emit({
     type: "provenance",
     suite: cfg.suite,
     configHash,
     promptsVersion: PROMPTS_VERSION,
+    harness: cfg.harness,
+    memory: cfg.memory,
+    cell: cellTag,
     model: cfg.model,
+    provider: cfg.provider,
+    ...(cfg.provider !== "native" ? { baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv, wireApi: cfg.wireApi } : {}),
     judgeModel: cfg.judgeModel,
+    qaReadTools: VAULT_READ_TOOLS, // locomo-c*-sonnet (Aug 19) ran view-only
     bare: cfg.bare,
-    contamination: cfg.bare ? "none (bare mode)" : "subscription mode: global ~/.claude/CLAUDE.md auto-loads into eval agents",
+    contamination,
+    ...(cfg.harness === "codex" ? { codexApprovalPin: codexPin?.name ?? "none (using default candidate)" } : {}),
     harnessGitSha: git("git rev-parse HEAD"),
     serverDirty: git("git status --porcelain server.mjs") !== "" ? "server.mjs has uncommitted changes" : "clean",
     claudeVersion: (() => { try { return execSync("claude --version").toString().trim(); } catch { return "unknown"; } })(),
+    ...(cfg.harness === "codex"
+      ? { codexVersion: (() => { try { return execSync("codex --version").toString().trim(); } catch { return "unknown"; } })() }
+      : {}),
     node: process.version,
     date: new Date().toISOString(),
   });
@@ -358,7 +416,7 @@ async function main() {
       }
       for (let i = start; i < conv.sessions.length; i++) {
         const session = conv.sessions[i];
-        const r = await runClaude({
+        const r = await runAgent({
           prompt: ingestPrompt(session),
           mcpUrl: `${server.base}/mcp/${conv.id}`,
           allowedTools: VAULT_TOOLS,
@@ -366,6 +424,12 @@ async function main() {
           timeoutMs: cfg.ingestTimeoutMs,
           label: `ingest-${conv.id}-${i}`,
         });
+        // Never snapshot an errored ingest — it would poison the resume cache
+        // with an empty/partial vault that later runs silently restore.
+        if (r.isError) {
+          await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, isError: true, text: String(r.text).slice(0, 300) });
+          throw new Error(`ingest ${conv.id} session ${i} failed: ${String(r.text).slice(0, 300)}`);
+        }
         execSync(`tar -czf "${snapAt(i + 1)}" -C "${scopeDir}" .`);
         console.log(`[ingest] ${conv.id} session ${i + 1}/${conv.sessions.length} (${session.date}): ${r.numTurns} turns, $${r.costUsd?.toFixed(4)}`);
         await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, turns: r.numTurns, costUsd: r.costUsd, usage: r.usage, models: r.models, durationMs: r.durationMs, isError: r.isError });
@@ -374,7 +438,7 @@ async function main() {
       const health = await healthCheck(scopeDir, suite.questions.filter((q) => q.conv === conv.id));
       console.log(`[health] ${conv.id}: ${health.files} files, ${health.bytes}B, ${health.staleFacts} stale, ${health.issues.length} issues`);
       await emit({ type: "health", conv: conv.id, ...health });
-      execSync(`tar -czf "${join(RESULTS_DIR, `${configTag}-${conv.id}.vault.tgz`)}" -C "${scopeDir}" .`);
+      execSync(`tar -czf "${join(CELL_DIR, `${configTag}-${conv.id}.vault.tgz`)}" -C "${scopeDir}" .`);
     }
 
     // ── QA + judge (worker pool; per-unit errors don't kill the run) ──
@@ -393,20 +457,22 @@ async function main() {
               system === "vault" ? qaVaultPrompt(q, today) :
               system === "closed_book" ? qaClosedBookPrompt(q, today) :
               qaFullContextPrompt(q, today, conv);
-            const a = await runClaude({
+            const a = await runAgent({
               prompt,
               mcpUrl: system === "vault" ? `${server.base}/mcp/${q.conv}` : null,
-              allowedTools: system === "vault" ? ["mcp__vault__view"] : [], // QA is read-only
+              allowedTools: system === "vault" ? VAULT_READ_TOOLS : [], // QA is read-only
               model: cfg.model,
               timeoutMs: cfg.qaTimeoutMs,
               label: `qa-${q.id}-${system}`,
             });
             // Rate-limit/API/spend-limit failures come back as exit-0 "answers" —
             // treat as errors (thrown = not cached) so they're retried, never judged.
+            // Same for empty answers: codex+small models occasionally end a turn
+            // without a final message event — that's a flake, not an answer.
             const apiFail = /^API Error|spend limit|usage limit/i;
-            if (a.isError || apiFail.test(a.text ?? ""))
-              throw new Error(`qa call failed: ${String(a.text).slice(0, 150)}`);
-            const j = await runClaude({
+            if (a.isError || !String(a.text ?? "").trim() || apiFail.test(a.text ?? ""))
+              throw new Error(`qa call failed: ${a.isError ? String(a.text).slice(0, 150) : "empty answer"}`);
+            const j = await runJudge({
               prompt: judgePrompt(q, a.text),
               mcpUrl: null, allowedTools: [],
               model: cfg.judgeModel,

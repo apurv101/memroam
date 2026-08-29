@@ -1,0 +1,11 @@
+{
+  "name": "per-server default_tools_approval_mode=approve",
+  "args": [
+    "-c",
+    "mcp_servers.vault.default_tools_approval_mode=\"approve\""
+  ],
+  "dangerous": false,
+  "dropSandboxFlag": false,
+  "codexVersion": "codex-cli 0.149.1",
+  "pinnedAt": "2026-08-29T14:32:24.144Z"
+}

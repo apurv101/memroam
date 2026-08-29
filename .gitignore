@@ -10,6 +10,7 @@ build/
 # Env / secrets
 .env
 .env.*
+!evals/.env.example
 
 # Node
 node_modules/
@@ -26,6 +27,7 @@ memory/
 data/
 *.sqlite3
 
-# Evals: downloaded datasets and resume cache (results/ itself is committed)
+# Evals: downloaded datasets and resume caches (results/ itself is committed;
+# each cell folder evals/results/<cell>/ carries its own .cache/)
 evals/datasets/
-evals/results/.cache/
+evals/results/**/.cache/

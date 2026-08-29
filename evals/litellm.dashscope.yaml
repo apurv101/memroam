@@ -1,0 +1,23 @@
+# LiteLLM shim: exposes an OpenAI Responses API locally and translates to
+# DashScope's chat-completions endpoint (its native /responses implementation
+# mishandles codex's namespaced tools ~50% of multi-round turns — verified
+# 2026-08-29 by wire tap; see eval memory note).
+#
+#   litellm --config evals/litellm.dashscope.yaml --port 4041
+#
+# Then point the codex side at it in evals/.env:
+#   DASHSCOPE_OPENAI_BASE_URL=http://127.0.0.1:4041/v1
+#   DASHSCOPE_UPSTREAM_OPENAI_BASE_URL=<the real compatible-mode/v1 URL>
+model_list:
+  # dashscope/ provider (NOT openai/): the openai/ provider "supports" the
+  # Responses API and passes /v1/responses straight through to the upstream —
+  # which is the broken endpoint we're shimming around. The dashscope provider
+  # speaks chat-completions, forcing LiteLLM's responses→chat bridge.
+  - model_name: "*"
+    litellm_params:
+      model: "dashscope/*"
+      api_base: os.environ/DASHSCOPE_UPSTREAM_OPENAI_BASE_URL
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+litellm_settings:
+  drop_params: true   # strip params DashScope's chat endpoint doesn't know

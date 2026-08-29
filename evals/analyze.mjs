@@ -1,19 +1,40 @@
 #!/usr/bin/env node
 // Merge locomo-c*.jsonl results into the headline table:
 // per-system overall / answerable-only / per-category accuracy, plus cost.
-// Usage: node evals/analyze.mjs [--dir evals/results] [--glob locomo-c]
+// Results live in per-cell folders: evals/results/<harness>-<memory>-<model>/.
+// Usage: node evals/analyze.mjs [--cell claude-vault-sonnet] [--glob locomo-c]
+//        (with one cell folder matching, --cell may be omitted)
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i === -1 ? dflt : args[i + 1];
 };
-const DIR = flag("dir", "evals/results");
+const RESULTS = flag("dir", "evals/results");
 const PREFIX = flag("glob", "locomo-c");
+const CELL = flag("cell", null);
 
-const files = (await readdir(DIR)).filter((f) => f.startsWith(PREFIX) && f.endsWith(".jsonl")).sort();
+const jsonls = async (d) =>
+  existsSync(d) ? (await readdir(d)).filter((f) => f.startsWith(PREFIX) && f.endsWith(".jsonl")).sort() : [];
+
+let DIR, files;
+if (CELL) {
+  DIR = join(RESULTS, CELL);
+  files = await jsonls(DIR);
+} else {
+  // No --cell: use the unique cell folder that has matches, else list options.
+  const cells = [];
+  for (const e of await readdir(RESULTS, { withFileTypes: true }))
+    if (e.isDirectory() && (await jsonls(join(RESULTS, e.name))).length) cells.push(e.name);
+  if (cells.length === 1) { DIR = join(RESULTS, cells[0]); files = await jsonls(DIR); console.log(`cell: ${cells[0]}`); }
+  else if (cells.length > 1) {
+    console.error(`multiple cells have ${PREFIX}*.jsonl — pick one with --cell:\n  ${cells.join("\n  ")}`);
+    process.exit(1);
+  } else { DIR = RESULTS; files = await jsonls(DIR); }
+}
 if (!files.length) { console.error(`no ${PREFIX}*.jsonl in ${DIR}`); process.exit(1); }
 
 const CATEGORIES = ["multi-hop", "temporal", "open-domain", "single-hop", "adversarial"];
