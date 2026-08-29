@@ -31,6 +31,15 @@ async function dispatch(method, params, scope, scopeNote) {
       return {};
     case "tools/list":
       return { tools: TOOLS };
+    // We serve no resources or prompts, but answer the standard listings with
+    // empty sets instead of -32601: some clients surface "Method not found" to
+    // the model as an error, and smaller models then abandon the whole server.
+    case "resources/list":
+      return { resources: [] };
+    case "resources/templates/list":
+      return { resourceTemplates: [] };
+    case "prompts/list":
+      return { prompts: [] };
     case "tools/call": {
       if (typeof params?.name !== "string") {
         throw new JsonRpcError(-32602, "tools/call requires a tool name");
