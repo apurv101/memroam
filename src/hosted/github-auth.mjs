@@ -7,7 +7,7 @@ import { createPrivateKey, createSign } from "node:crypto";
 import { secretsGet } from "./aws.mjs";
 
 const API = "https://api.github.com";
-const UA = "memroam-hosted";
+const UA = "memory-vault-hosted";
 
 // The secret JSON is immutable once set — safe to cache across warm invocations.
 let credsCache = null;

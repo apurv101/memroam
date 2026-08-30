@@ -1,12 +1,11 @@
 {
-  "name": "memroam",
-  "version": "0.4.1",
-  "mcpName": "com.memroam/memroam",
-  "description": "Portable AI memory over a local folder or hosted vault, served via MCP — your memory roams with you across models and harnesses (Claude, ChatGPT, Codex, Cursor). Per-project spaces plus a shared layer, stored as plain markdown you own.",
+  "name": "memory-vault",
+  "version": "0.5.0",
+  "mcpName": "io.github.apurv101/memory-vault",
+  "description": "Portable AI memory over a local folder or hosted vault, served via MCP \u2014 one memory shared across models and harnesses (Claude, ChatGPT, Codex, Cursor). Per-project spaces plus a shared org layer, stored as plain markdown you own.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "memroam": "server.mjs",
     "memory-vault": "server.mjs"
   },
   "files": [

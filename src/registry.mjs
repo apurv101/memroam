@@ -18,10 +18,10 @@ export const projectSlug = (name) =>
     .replace(/^[^a-z0-9]+/, "")
     .slice(0, 64);
 
-export const CONNECTIONS_PATH = join(homedir(), ".memroam-connections.json");
-// memory-vault-era installs wrote this path; readRegistry falls back to it,
+export const CONNECTIONS_PATH = join(homedir(), ".memory-vault-connections.json");
+// memroam-era installs wrote this path; readRegistry falls back to it,
 // and the next write migrates the registry to the new name and removes it.
-const LEGACY_CONNECTIONS_PATH = join(homedir(), ".memory-vault-connections.json");
+const LEGACY_CONNECTIONS_PATH = join(homedir(), ".memroam-connections.json");
 
 export async function readRegistry() {
   for (const path of [CONNECTIONS_PATH, LEGACY_CONNECTIONS_PATH]) {

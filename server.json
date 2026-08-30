@@ -1,22 +1,22 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "com.memroam/memroam",
-  "title": "Memroam",
-  "description": "Portable AI memory that roams with you across models and harnesses - plain markdown you own.",
-  "version": "0.4.1",
-  "websiteUrl": "https://memroam.com",
+  "name": "io.github.apurv101/memory-vault",
+  "title": "Memory Vault",
+  "description": "Portable AI memory shared across models and harnesses - plain markdown you own.",
+  "version": "0.5.0",
+  "websiteUrl": "https://memoryvault.click",
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://memroam.com/mcp"
+      "url": "https://memoryvault.click/mcp"
     }
   ],
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "memroam",
-      "version": "0.4.1",
+      "identifier": "memory-vault",
+      "version": "0.5.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -24,7 +24,7 @@
       "environmentVariables": [
         {
           "name": "MEMORY_DIR",
-          "description": "Directory the vault stores memory in (defaults to ~/.memroam)",
+          "description": "Directory the vault stores memory in (defaults to ~/.memory-vault)",
           "isRequired": false,
           "format": "string"
         },

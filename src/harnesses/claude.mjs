@@ -12,7 +12,7 @@ export default {
   detect: async () => true,
   async install({ cwd, url, dryRun }) {
     const status = await mergeMcpJson(join(cwd, ".mcp.json"), { type: "http", url }, dryRun);
-    return [`claude   .mcp.json ${status} (memroam → ${url})`];
+    return [`claude   .mcp.json ${status} (vault → ${url})`];
   },
   async uninstall({ cwd, dryRun }) {
     return [`claude   .mcp.json ${await removeMcpJson(join(cwd, ".mcp.json"), dryRun)}`];

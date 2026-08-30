@@ -1,6 +1,6 @@
 output "service_url" {
   description = "Public HTTPS base of the service — the MCP endpoint is <service_url>/mcp"
-  value       = "https://${var.alt_domain}"
+  value       = "https://${var.domain}"
 }
 
 output "lambda_origin_url" {

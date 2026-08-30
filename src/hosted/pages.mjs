@@ -20,13 +20,13 @@ const shell = (title, body) => `<!doctype html>
 
 export const consentPage = ({ clientName, repoFullName, defaultSpace, authreqId, nonce }) =>
   shell(
-    "Approve access — Memroam",
-    `<h1>Approve access to your Memroam vault?</h1>
+    "Approve access — Memory Vault",
+    `<h1>Approve access to your Memory Vault vault?</h1>
      <p><strong>${esc(clientName || "An MCP client")}</strong> is requesting read/write access to your
-     Memroam vault, stored in your GitHub repository <strong>${esc(repoFullName)}</strong>
+     Memory Vault vault, stored in your GitHub repository <strong>${esc(repoFullName)}</strong>
      (default space <code>${esc(defaultSpace)}</code>).</p>
      <p class="muted">Every change it makes becomes a commit in that repository. You can revoke access at
-     any time by uninstalling the memroam GitHub App from the repository.</p>
+     any time by uninstalling the memory-vault GitHub App from the repository.</p>
      <div class="actions">
        <form method="POST" action="/approve">
          <input type="hidden" name="authreq" value="${esc(authreqId)}">
@@ -44,11 +44,11 @@ export const consentPage = ({ clientName, repoFullName, defaultSpace, authreqId,
   );
 
 export const errorPage = (title, message) =>
-  shell(`${title} — Memroam`, `<h1>${esc(title)}</h1><p>${esc(message)}</p>`);
+  shell(`${title} — Memory Vault`, `<h1>${esc(title)}</h1><p>${esc(message)}</p>`);
 
 export const installProblemPage = (message, slug) =>
   shell(
-    "Installation problem — Memroam",
+    "Installation problem — Memory Vault",
     `<h1>Almost there</h1><p>${esc(message)}</p>
      <p>Fix the installation here:
      <a href="https://github.com/apps/${esc(slug)}/installations/new">github.com/apps/${esc(slug)}/installations/new</a>
@@ -58,8 +58,8 @@ export const installProblemPage = (message, slug) =>
 
 export const landingPage = () =>
   shell(
-    "Memroam",
-    `<h1>Memroam — hosted</h1>
+    "Memory Vault",
+    `<h1>Memory Vault — hosted</h1>
      <p>Persistent, portable memory for AI harnesses — your memory roams with you across models and
      harnesses. Your memories live in your own private GitHub
      repository; this server is a stateless bridge speaking the Model Context Protocol.</p>

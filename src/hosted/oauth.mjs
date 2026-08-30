@@ -199,11 +199,11 @@ async function bootstrapIfEmpty(user) {
   if (!meta.ok) return;
   const ref = await ghApi(`/repos/${owner}/${repo}/git/ref/${encodeURIComponent(`heads/${meta.json.default_branch}`)}`, { token });
   if (ref.status !== 404 && ref.status !== 409) return; // repo already has commits
-  await ghApi(`/repos/${owner}/${repo}/contents/${encodeURIComponent(".memroam")}`, {
+  await ghApi(`/repos/${owner}/${repo}/contents/${encodeURIComponent(".memory-vault")}`, {
     token,
     method: "PUT",
     body: {
-      message: "memroam: initialize store",
+      message: "memory-vault: initialize store",
       content: Buffer.from('{"format":1}\n').toString("base64"),
     },
   });

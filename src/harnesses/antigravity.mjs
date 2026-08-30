@@ -8,17 +8,17 @@ import { mergeMcpJson, removeMcpJson } from "./helpers.mjs";
 const stateDir = () => join(homedir(), ".gemini", "antigravity");
 const configDir = () => join(homedir(), ".gemini", "config");
 const mcpPath = () => join(configDir(), "mcp_config.json");
-const rulesPath = () => join(configDir(), "rules", "memroam.md");
-// Installs from the memory-vault era wrote this filename; uninstall and
+const rulesPath = () => join(configDir(), "rules", "memory-vault.md");
+// Installs from the memroam era wrote this filename; uninstall and
 // install-idempotence must keep recognizing it.
-const legacyRulesPath = () => join(configDir(), "rules", "memory-vault.md");
+const legacyRulesPath = () => join(configDir(), "rules", "memroam.md");
 
 // The rule file is wholly ours — frontmatter plus the standard marked section,
 // created and deleted as a unit. trigger: always_on keeps it unconditionally
 // loaded (Antigravity's other rule modes are progressive-disclosure).
 const RULES_FILE = `---
 trigger: always_on
-description: Persistent cross-session memory via the Memroam MCP server
+description: Persistent cross-session memory via the vault MCP server
 ---
 
 ${GLOBAL_MARKED_SECTION}`;
@@ -39,11 +39,11 @@ export default {
     let wired = false;
     try {
       const servers = JSON.parse(raw).mcpServers;
-      wired = Boolean(servers?.memroam ?? servers?.vault);
+      wired = Boolean(servers?.vault ?? servers?.memroam);
     } catch {}
     return [
       `antigravity reads the repo AGENTS.md natively — MCP is global-only, ${
-        wired ? "already wired in ~/.gemini/config/mcp_config.json" : "run: npx -y memroam install --global"
+        wired ? "already wired in ~/.gemini/config/mcp_config.json" : "run: npx -y memory-vault install --global"
       }`,
     ];
   },
@@ -58,7 +58,7 @@ export default {
     const entry = { command, args, env: { MEMORY_DIR: store } };
     const status = await mergeMcpJson(mcpPath(), entry, dryRun);
     // Either filename counts as installed — don't write a second rule file
-    // next to a memory-vault-era one.
+    // next to a memroam-era one.
     const rulesThere = (await exists(rulesPath())) || (await exists(legacyRulesPath()));
     if (!dryRun && !rulesThere) {
       await mkdir(join(configDir(), "rules"), { recursive: true });
@@ -66,7 +66,7 @@ export default {
     }
     return [
       `antigravity ~/.gemini/config/mcp_config.json ${status} (global, stdio)`,
-      `antigravity ~/.gemini/config/rules/memroam.md ${rulesThere ? "unchanged" : "created"} (always-on rule)`,
+      `antigravity ~/.gemini/config/rules/memory-vault.md ${rulesThere ? "unchanged" : "created"} (always-on rule)`,
     ];
   },
   async globalUninstall({ dryRun }) {
@@ -79,10 +79,10 @@ export default {
         await rm(path);
         await rmdir(join(configDir(), "rules")).catch(() => {});
       }
-      lines.push(`antigravity ~/.gemini/config/rules/${path.endsWith("memroam.md") ? "memroam.md" : "memory-vault.md"} removed`);
+      lines.push(`antigravity ~/.gemini/config/rules/${path.endsWith("memory-vault.md") ? "memory-vault.md" : "memroam.md"} removed`);
       removed = true;
     }
-    if (!removed) lines.push("antigravity ~/.gemini/config/rules/memroam.md not present");
+    if (!removed) lines.push("antigravity ~/.gemini/config/rules/memory-vault.md not present");
     return lines;
   },
 };

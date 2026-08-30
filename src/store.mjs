@@ -10,13 +10,15 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 export let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
 export const PORT = Number(process.env.VAULT_PORT ?? 8787);
 
-// Default store location. Installs from the memory-vault era keep their
-// existing ~/.memory-vault store; fresh machines get ~/.memroam. MEMORY_DIR
-// (and the registry's recorded store path) always take precedence — this is
-// only the last-resort default.
+// Default store location. Installs from the memroam era keep their existing
+// ~/.memroam store; everyone else gets ~/.memory-vault. MEMORY_DIR (and the
+// registry's recorded store path) always take precedence — this is only the
+// last-resort default.
 export function defaultStoreDir() {
-  const legacy = join(homedir(), ".memory-vault");
-  return existsSync(legacy) ? legacy : join(homedir(), ".memroam");
+  const preferred = join(homedir(), ".memory-vault");
+  if (existsSync(preferred)) return preferred;
+  const legacy = join(homedir(), ".memroam");
+  return existsSync(legacy) ? legacy : preferred;
 }
 
 // Several processes can share the store (stdio instances, the HTTP server),

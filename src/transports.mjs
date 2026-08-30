@@ -22,9 +22,9 @@ export const server = createServer(async (req, res) => {
   if (url.pathname === "/" && req.method === "GET") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(
-      `memroam (local) — store: ${MEMORY_DIR}\n` +
+      `memory-vault (local) — store: ${MEMORY_DIR}\n` +
         `MCP endpoints: POST /mcp/<project> (project scope), POST /mcp (whole vault)\n` +
-        `Connect (per repo): claude mcp add --transport http --scope project memroam http://localhost:${PORT}/mcp/<project>\n`,
+        `Connect (per repo): claude mcp add --transport http --scope project vault http://localhost:${PORT}/mcp/<project>\n`,
     );
     return;
   }
@@ -130,7 +130,7 @@ export async function stdioServe() {
   // instructions may briefly describe the cwd-derived scope — tool calls use
   // whatever the scope is at call time, and MEMORY.md always shows the truth.
   let clientSupportsRoots = false;
-  const ROOTS_ID = "memroam:roots";
+  const ROOTS_ID = "memory-vault:roots";
   const requestRoots = () => {
     if (clientSupportsRoots && !pinned) send({ id: ROOTS_ID, method: "roots/list" });
   };

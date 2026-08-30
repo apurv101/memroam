@@ -28,34 +28,34 @@ export default {
     if (!(await exists(join(homedir(), ".cursor")))) return ["cursor   ~/.cursor not found — skipped"];
     const entry = { command, args, env: { MEMORY_DIR: store } };
     const status = await mergeMcpJson(join(homedir(), ".cursor", "mcp.json"), entry, dryRun);
-    const skillPath = join(homedir(), ".cursor", "skills", "memroam", "SKILL.md");
+    const skillPath = join(homedir(), ".cursor", "skills", "memory-vault", "SKILL.md");
     // Either skill directory counts as installed — installs from the
-    // memory-vault era wrote ~/.cursor/skills/memory-vault.
+    // memroam era wrote ~/.cursor/skills/memroam.
     const skillExists =
-      (await exists(skillPath)) || (await exists(join(homedir(), ".cursor", "skills", "memory-vault", "SKILL.md")));
+      (await exists(skillPath)) || (await exists(join(homedir(), ".cursor", "skills", "memroam", "SKILL.md")));
     if (!dryRun && !skillExists) {
       await mkdir(dirname(skillPath), { recursive: true });
       await writeFile(skillPath, CURSOR_RITUAL_SKILL);
     }
     return [
       `cursor   ~/.cursor/mcp.json ${status} (global, stdio)`,
-      `cursor   ~/.cursor/skills/memroam ${skillExists ? "unchanged" : "created"} (ritual as a personal skill)`,
+      `cursor   ~/.cursor/skills/memory-vault ${skillExists ? "unchanged" : "created"} (ritual as a personal skill)`,
       "cursor   for always-on recall, also paste the ritual under Settings → Rules (app-managed, not writable)",
     ];
   },
   async globalUninstall({ dryRun }) {
     if (!(await exists(join(homedir(), ".cursor")))) return ["cursor   ~/.cursor not found — skipped"];
     const lines = [`cursor   ~/.cursor/mcp.json ${await removeMcpJson(join(homedir(), ".cursor", "mcp.json"), dryRun)}`];
-    // Remove the skill under either name — memory-vault-era installs used the old one.
+    // Remove the skill under either name — memroam-era installs used the old one.
     let removed = false;
-    for (const name of ["memroam", "memory-vault"]) {
+    for (const name of ["memory-vault", "memroam"]) {
       const skillDir = join(homedir(), ".cursor", "skills", name);
       if (!(await exists(skillDir))) continue;
       if (!dryRun) await rm(skillDir, { recursive: true });
       lines.push(`cursor   ~/.cursor/skills/${name} removed`);
       removed = true;
     }
-    if (!removed) lines.push("cursor   ~/.cursor/skills/memroam not present");
+    if (!removed) lines.push("cursor   ~/.cursor/skills/memory-vault not present");
     return lines;
   },
 };

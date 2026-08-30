@@ -1,4 +1,4 @@
-# Memroam Evals — Design & Execution Plan
+# Memory Vault Evals — Design & Execution Plan
 
 This is the design doc that `run.mjs` cites ("Memory Vault — Eval Execution Plan"). Part I
 records the design rules and results of the existing single-harness suites; Part II is the
@@ -73,7 +73,7 @@ number ships before the calibration set is labeled and agreement is recorded in 
 
 ### 1. Motivation and precedents
 
-Everything in Part I runs in one harness: headless `claude -p`. Memroam's thesis is one
+Everything in Part I runs in one harness: headless `claude -p`. Memory Vault's thesis is one
 memory that roams across harnesses; nothing yet measures a memory written in Codex being
 read in Claude Code, or a task started in one harness and finished in another.
 
@@ -114,7 +114,7 @@ cross-harness memory sits in the empty intersection:
 OpenCode is an ablation, not a fourth matrix row: 3×3 = 9 cells stays affordable and the
 Bedrock-Claude arm is what separates harness behavior from model capability (§6).
 cursor-agent is out of scope for v1 (not installed). The hosted tier
-(claude.ai / ChatGPT connectors over `https://memroam.com/mcp`) is not automatable and is
+(claude.ai / ChatGPT connectors over `https://memoryvault.click/mcp`) is not automatable and is
 covered only by manual spot checks.
 
 Never hardcode model IDs: all three CLIs report resolved models in their JSON output;

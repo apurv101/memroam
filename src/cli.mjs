@@ -72,7 +72,7 @@ async function install(argv) {
     else if (argv[i] === "--yes" || argv[i] === "-y") yes = true;
     else
       throw new Error(
-        `unknown flag: ${argv[i]} (usage: memroam install [--project <name>] [--harness <keys>] [--yes] [--dry-run])`,
+        `unknown flag: ${argv[i]} (usage: memory-vault install [--project <name>] [--harness <keys>] [--yes] [--dry-run])`,
       );
   }
   const cwd = process.cwd();
@@ -92,15 +92,15 @@ async function install(argv) {
     lines.push(`server   down — would start it (store: ${process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir()})`);
   } else {
     const storeDir = resolve(process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir());
-    const log = openSync(join(tmpdir(), "memroam.log"), "a");
+    const log = openSync(join(tmpdir(), "memory-vault.log"), "a");
     spawn(process.execPath, [SELF], {
       detached: true,
       stdio: ["ignore", log, log],
       env: { ...process.env, MEMORY_DIR: storeDir },
     }).unref();
     for (let i = 0; i < 20 && !(await serverUp()); i++) await new Promise((r) => setTimeout(r, 250));
-    if (!(await serverUp())) throw new Error(`started the server but it did not come up — see ${join(tmpdir(), "memroam.log")}`);
-    lines.push(`server   started on port ${PORT} (store: ${storeDir}, log: ${join(tmpdir(), "memroam.log")})`);
+    if (!(await serverUp())) throw new Error(`started the server but it did not come up — see ${join(tmpdir(), "memory-vault.log")}`);
+    lines.push(`server   started on port ${PORT} (store: ${storeDir}, log: ${join(tmpdir(), "memory-vault.log")})`);
   }
 
   // 2. Pick harnesses: --harness wins; otherwise the detected set, confirmed
@@ -135,9 +135,9 @@ async function install(argv) {
     lines.push(`registry ${CONNECTIONS_PATH} recorded`);
   }
 
-  console.log(`memroam install — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
+  console.log(`memory-vault install — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
-  console.log("\nRestart your session and approve the memroam MCP server when prompted.");
+  console.log("\nRestart your session and approve the vault MCP server when prompted.");
 }
 
 async function uninstall(argv) {
@@ -146,7 +146,7 @@ async function uninstall(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--project") project = argv[++i];
     else if (argv[i] === "--dry-run") dryRun = true;
-    else throw new Error(`unknown flag: ${argv[i]} (usage: memroam uninstall [--project <name>] [--dry-run])`);
+    else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault uninstall [--project <name>] [--dry-run])`);
   }
   const cwd = process.cwd();
   project = projectSlug(project ?? basename(cwd));
@@ -163,11 +163,11 @@ async function uninstall(argv) {
     lines.push("registry no entry for this repo");
   }
 
-  console.log(`memroam uninstall — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
+  console.log(`memory-vault uninstall — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
   console.log(
     `\nYour memories are untouched — the store stays in the vault directory (default ${defaultStoreDir()}).\n` +
-      "The server keeps running for other projects; restart your agent session to drop the memroam tools.",
+      "The server keeps running for other projects; restart your agent session to drop the vault tools.",
   );
 }
 
@@ -183,7 +183,7 @@ async function uninstall(argv) {
 // or global tree that may move, so registrations go through npx instead.
 function stdioLaunch() {
   return SELF.includes(`${sep}node_modules${sep}`)
-    ? { command: "npx", args: ["-y", "memroam", "stdio"] }
+    ? { command: "npx", args: ["-y", "memory-vault", "stdio"] }
     : { command: process.execPath, args: [SELF, "stdio"] };
 }
 
@@ -193,7 +193,7 @@ async function installGlobal(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") dryRun = true;
     else if (argv[i] === "--store") storeFlag = argv[++i];
-    else throw new Error(`unknown flag: ${argv[i]} (usage: memroam install --global [--store <dir>] [--dry-run])`);
+    else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault install --global [--store <dir>] [--dry-run])`);
   }
   const registry = await readRegistry();
   const store = resolve(storeFlag ?? process.env.MEMORY_DIR ?? registry.store ?? defaultStoreDir());
@@ -207,16 +207,16 @@ async function installGlobal(argv) {
     await writeRegistry(registry);
     lines.push(`registry ${CONNECTIONS_PATH} recorded`);
   }
-  console.log(`memroam install --global${dryRun ? " (dry run)" : ""}\n`);
+  console.log(`memory-vault install --global${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
-  console.log("\nRestart your sessions; each one gets the memroam tools and lands in its own project space automatically.");
+  console.log("\nRestart your sessions; each one gets the vault tools and lands in its own project space automatically.");
 }
 
 async function uninstallGlobal(argv) {
   let dryRun = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") dryRun = true;
-    else throw new Error(`unknown flag: ${argv[i]} (usage: memroam uninstall --global [--dry-run])`);
+    else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault uninstall --global [--dry-run])`);
   }
   const lines = [];
   for (const h of HARNESSES) lines.push(...(await h.globalUninstall({ dryRun })));
@@ -228,7 +228,7 @@ async function uninstallGlobal(argv) {
     }
     lines.push("registry global entry removed (store path and space map kept for reinstall)");
   }
-  console.log(`memroam uninstall --global${dryRun ? " (dry run)" : ""}\n`);
+  console.log(`memory-vault uninstall --global${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
   console.log("\nYour memories are untouched.");
 }
@@ -241,7 +241,7 @@ async function adapterCommand(kind, argv) {
   for (const a of argv) {
     if (a === "--dry-run") dryRun = true;
     else if (a === "--json") json = true;
-    else throw new Error(`unknown flag: ${a} (usage: memroam ${kind === "import" ? "import" : "project"} [--dry-run] [--json])`);
+    else throw new Error(`unknown flag: ${a} (usage: memory-vault ${kind === "import" ? "import" : "project"} [--dry-run] [--json])`);
   }
   const registry = await readRegistry();
   setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? defaultStoreDir());
@@ -250,7 +250,7 @@ async function adapterCommand(kind, argv) {
     console.log(JSON.stringify(reports, null, 2));
     return;
   }
-  console.log(`memroam ${kind}${dryRun ? " (dry run)" : ""} — store: ${MEMORY_DIR}\n`);
+  console.log(`memory-vault ${kind}${dryRun ? " (dry run)" : ""} — store: ${MEMORY_DIR}\n`);
   for (const r of reports) {
     console.log(`  ${r.adapter} (${r.tier ?? "?"})`);
     if (r.error) {
@@ -272,9 +272,9 @@ async function adapterCommand(kind, argv) {
 
 // ── CLI dispatch ──────────────────────────────────────────────────────────────
 
-const USAGE = `memroam — Claude-style memory over a local folder, via MCP
+const USAGE = `memory-vault — Claude-style memory over a local folder, via MCP
 
-  memroam install --global
+  memory-vault install --global
                             wire every harness on this machine to the vault,
                             once: a stdio MCP registration per harness plus
                             the memory ritual in its global rules file. Every
@@ -282,22 +282,22 @@ const USAGE = `memroam — Claude-style memory over a local folder, via MCP
                             setup; the project space is detected from each
                             session's directory automatically.
                             [--store <dir>] [--dry-run]
-  memroam uninstall --global
+  memory-vault uninstall --global
                             undo install --global; memories are never touched
                             [--dry-run]
-  memroam stdio             MCP over stdin/stdout (what the global
+  memory-vault stdio             MCP over stdin/stdout (what the global
                             registrations run)
-  memroam [serve]           serve the vault over HTTP (MEMORY_DIR, VAULT_PORT)
-  memroam install           wire only the current repo (team-shared configs,
+  memory-vault [serve]           serve the vault over HTTP (MEMORY_DIR, VAULT_PORT)
+  memory-vault install           wire only the current repo (team-shared configs,
                             custom space name)          (alias: connect)
                             [--project <name>] [--harness <keys>] [--yes] [--dry-run]
-  memroam uninstall         undo install for this repo  (alias: disconnect)
+  memory-vault uninstall         undo install for this repo  (alias: disconnect)
                             [--project <name>] [--dry-run]
-  memroam import            import native harness memory (Claude auto-memory,
+  memory-vault import            import native harness memory (Claude auto-memory,
                             Codex sqlite) into candidates/ [--dry-run] [--json]
-  memroam project           regenerate read-only projections for harnesses
+  memory-vault project           regenerate read-only projections for harnesses
                             without native memory (dsh)   [--dry-run] [--json]
-  memroam status            show server state, this repo's wiring, the global
+  memory-vault status            show server state, this repo's wiring, the global
                             wiring, and every repo recorded by install`;
 
 export async function runCli(argv, self) {
@@ -311,7 +311,7 @@ export async function runCli(argv, self) {
       if (isGlobal) await installGlobal(restWithoutGlobal);
       else await install(rest);
     } catch (err) {
-      console.error(`memroam install: ${err.message}`);
+      console.error(`memory-vault install: ${err.message}`);
       process.exit(1);
     }
   } else if (cmd === "uninstall" || cmd === "disconnect") {
@@ -319,14 +319,14 @@ export async function runCli(argv, self) {
       if (isGlobal) await uninstallGlobal(restWithoutGlobal);
       else await uninstall(rest);
     } catch (err) {
-      console.error(`memroam uninstall: ${err.message}`);
+      console.error(`memory-vault uninstall: ${err.message}`);
       process.exit(1);
     }
   } else if (cmd === "import" || cmd === "project") {
     try {
       await adapterCommand(cmd, rest);
     } catch (err) {
-      console.error(`memroam ${cmd}: ${err.message}`);
+      console.error(`memory-vault ${cmd}: ${err.message}`);
       process.exit(1);
     }
   } else if (cmd === "stdio") {
@@ -337,7 +337,7 @@ export async function runCli(argv, self) {
     await mkdir(MEMORY_DIR, { recursive: true });
     // Loopback-only by default; VAULT_HOST=0.0.0.0 for containerized runs.
     server.listen(PORT, process.env.VAULT_HOST ?? "127.0.0.1", () => {
-      console.log(`memroam serving ${MEMORY_DIR}`);
+      console.log(`memory-vault serving ${MEMORY_DIR}`);
       console.log(`MCP endpoints: http://localhost:${PORT}/mcp/<project> (scoped), http://localhost:${PORT}/mcp (whole vault)`);
     });
   } else {

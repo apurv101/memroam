@@ -16,7 +16,7 @@ export default {
   // addressed as a "remote" MCP entry.
   async install({ cwd, url, dryRun }) {
     const status = await mergeOpencodeMcp(join(cwd, "opencode.json"), { type: "remote", url, enabled: true }, dryRun);
-    return [`opencode opencode.json ${status} (memroam → ${url})`];
+    return [`opencode opencode.json ${status} (vault → ${url})`];
   },
   async uninstall({ cwd, dryRun }) {
     return [`opencode opencode.json ${await removeOpencodeMcp(join(cwd, "opencode.json"), dryRun)}`];
