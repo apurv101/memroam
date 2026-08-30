@@ -11,37 +11,36 @@
 // which codex.mjs reads on every subsequent run.
 
 import { spawn, execSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { drivers, loadDotEnv, resolveBackend } from "./index.mjs";
+import { drivers, resolveBackend } from "./index.mjs";
 import { APPROVAL_CANDIDATES } from "./codex.mjs";
+import {
+  cliArgs, loadDotEnv, assertBackendFlags, spawnVaultServer, seedScope,
+  qaVaultPrompt, VAULT_TOOLS, VAULT_READ_TOOLS,
+} from "../lib.mjs";
 
 loadDotEnv();
 
 const DRIVERS_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_DIR = resolve(DRIVERS_DIR, "..", "..");
-const SERVER = join(REPO_DIR, "server.mjs");
 const PIN_FILE = join(DRIVERS_DIR, "codex-approval.json");
 
-const argv = process.argv.slice(2);
-const opt = (name, dflt) => {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : dflt;
-};
+const { opt, flag } = cliArgs();
 const harnesses = opt("harness", "claude,codex").split(",").map((s) => s.trim());
 const modelOverride = opt("model", null);
-const keep = argv.includes("--keep");
-// Custom backend under test — same flags as run.mjs; per-harness base URL and
-// key resolve from the evals/.env provider profile when not given explicitly.
+const keep = flag("keep");
+// Custom backend under test — same flags (and shared validation) as run.mjs;
+// per-harness base URL and key resolve from the evals/.env provider profile
+// when not given explicitly.
 const provider = opt("provider", "native");
 const baseUrlFlag = opt("base-url", null);
 const apiKeyEnvFlag = opt("api-key-env", null);
 const wireApiFlag = opt("wire-api", null); // codex: null = probe responses, then chat
-if (baseUrlFlag && provider === "native") { console.error("--base-url requires --provider <tag>"); process.exit(1); }
-if (provider !== "native" && !modelOverride) { console.error("--provider requires --model (the backend has no CLI default)"); process.exit(1); }
+try { assertBackendFlags({ provider, baseUrl: baseUrlFlag, model: modelOverride }); }
+catch (e) { console.error(e.message); process.exit(1); }
 const backendFor = (harness) => {
   if (provider === "native") return { baseUrl: null, apiKeyEnv: null };
   const b = resolveBackend({ provider, harness, baseUrl: baseUrlFlag, apiKeyEnv: apiKeyEnvFlag });
@@ -53,29 +52,7 @@ const TIMEOUT = 180_000;
 const FACT = "the staging deploy passphrase hint is falcon-42";
 const DEFAULT_MODEL = { claude: "haiku", codex: null }; // codex null = CLI default
 
-// ── infra ─────────────────────────────────────────────────────────────────────
-
-async function spawnServer(memoryDir) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const proc = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, MEMORY_DIR: memoryDir, VAULT_PORT: String(port) },
-    stdio: "ignore",
-  });
-  const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 50; i++) {
-    try { await fetch(`${base}/mcp`, { method: "GET" }); return { base, kill: () => proc.kill() }; }
-    catch { await new Promise((r) => setTimeout(r, 100)); }
-  }
-  proc.kill();
-  throw new Error("vault server did not come up");
-}
-
-async function newScope(memoryDir, scope) {
-  const dir = join(memoryDir, scope);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "MEMORY.md"), `# Memory index — ${scope}\n\n`);
-  return dir;
-}
+// ── infra (server spawn + scope seeding shared via ../lib.mjs) ────────────────
 
 async function mdFiles(dir) {
   return (await readdir(dir)).filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
@@ -109,13 +86,16 @@ function codexDefaultModel(workDir) {
 
 const savePrompt =
   `A session is ending. Persist this fact to your memory directory per your memory instructions, then reply "done": ${FACT}`;
-const askPrompt =
-  `Using only your memory directory, answer: what is the staging deploy passphrase hint? If it's not in memory, say you don't know.`;
+// The read step uses the same QA template real cells use (lib.mjs), so the
+// smoke gate exercises the exact prompt shape of the matrix.
+const askPrompt = qaVaultPrompt(
+  { question: "what is the staging deploy passphrase hint?" },
+  new Date().toISOString().slice(0, 10));
 
 async function pinCodexApproval(server, memoryDir, workDir, model, backend = {}) {
   for (const cand of APPROVAL_CANDIDATES) {
     const scope = `pin-${APPROVAL_CANDIDATES.indexOf(cand)}`;
-    const scopeDir = await newScope(memoryDir, scope);
+    const scopeDir = await seedScope(memoryDir, scope);
     process.stdout.write(`  [codex] probing approval override: ${cand.name} ... `);
     try {
       const r = await drivers.codex.run({
@@ -183,7 +163,7 @@ async function smokeHarness(name, server, memoryDir, workDir) {
   }
 
   const scope = `smoke-${name}`;
-  const scopeDir = await newScope(memoryDir, scope);
+  const scopeDir = await seedScope(memoryDir, scope);
 
   // 1. RW round-trip: save the fact, assert it landed on disk. One retry:
   // smoke gates plumbing, and a small model occasionally dithers and stops
@@ -192,9 +172,7 @@ async function smokeHarness(name, server, memoryDir, workDir) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     w = await driver.run({
       prompt: savePrompt, mcpUrl: `${server.base}/mcp/${scope}`, model,
-      allowedTools: name === "claude"
-        ? ["view", "search", "create", "str_replace", "insert", "delete", "rename"].map((t) => `mcp__vault__${t}`)
-        : undefined,
+      allowedTools: name === "claude" ? VAULT_TOOLS : undefined,
       workDir, timeoutMs: TIMEOUT, label: `smoke-${name}-write-a${attempt}`, ...backend,
     });
     files = await mdFiles(scopeDir);
@@ -209,7 +187,7 @@ async function smokeHarness(name, server, memoryDir, workDir) {
   // 2. Fresh-session read: answer must contain the fact.
   const r = await driver.run({
     prompt: askPrompt, mcpUrl: `${server.base}/mcp/${scope}`, model,
-    allowedTools: name === "claude" ? ["mcp__vault__view", "mcp__vault__search"] : undefined,
+    allowedTools: name === "claude" ? VAULT_READ_TOOLS : undefined,
     workDir, timeoutMs: TIMEOUT, label: `smoke-${name}-read`, ...backend,
   });
   const answered = /falcon-42/i.test(r.text);
@@ -232,7 +210,7 @@ async function smokeHarness(name, server, memoryDir, workDir) {
 
 const memoryDir = await mkdtemp(join(tmpdir(), "vault-smoke-mem-"));
 const workDir = await mkdtemp(join(tmpdir(), "vault-smoke-work-"));
-const server = await spawnServer(memoryDir);
+const server = await spawnVaultServer(memoryDir);
 console.log(`vault server up, memory at ${memoryDir}`);
 
 let failed = false;

@@ -1,0 +1,21 @@
+# LiteLLM shim for the Vast.ai vLLM pod — one proxy, both harnesses:
+#   claude → POST /v1/messages   (Anthropic format, translated to chat)
+#   codex  → POST /v1/responses  (Responses format, bridged to chat)
+# hosted_vllm/* is a chat-completions provider, so both inbound formats are
+# forced through LiteLLM's translation instead of trusting the pod's native
+# /responses endpoint (same lesson as DashScope — verify with `vast.mjs probe`
+# before ever bypassing this).
+#
+#   litellm --config evals/litellm.vast.yaml --port 4042
+#
+# VAST_UPSTREAM_OPENAI_BASE_URL and VAST_API_KEY come from evals/.vast.env,
+# written by `node evals/vast.mjs up`.
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "hosted_vllm/*"
+      api_base: os.environ/VAST_UPSTREAM_OPENAI_BASE_URL
+      api_key: os.environ/VAST_API_KEY
+
+litellm_settings:
+  drop_params: true

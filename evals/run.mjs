@@ -3,9 +3,14 @@
 //
 //   node evals/run.mjs [--suite micro] [--harness claude|codex] [--memory vault]
 //                      [--model sonnet] [--judge-model haiku] [--baselines]
-//                      [--no-cache] [--keep-vault] [--bare]
+//                      [--no-cache] [--keep-vault] [--bare] [--only health|judge]
 //                      [--provider dashscope --base-url URL --api-key-env NAME
 //                       [--wire-api responses|chat]]
+//
+// --only health  ingest (cache-resumable) + health checks + vault snapshots,
+//                no QA/judge. --only judge re-runs the judge over this
+//                config's cached answers (no server, no QA calls) — e.g. after
+//                a flaky judge run — and rewrites verdicts in cache + results.
 //
 // Harness drivers live in evals/drivers/ (one file per CLI, shared contract).
 // Judge always runs on the claude driver regardless of --harness. Run
@@ -34,34 +39,28 @@
 //
 // Zero dependencies. Node >= 18.
 
-import { spawn, execSync } from "node:child_process";
-import {
-  mkdir, mkdtemp, readFile, writeFile, readdir, rm, appendFile, stat, cp,
-} from "node:fs/promises";
-import { drivers, loadDotEnv, resolveBackend } from "./drivers/index.mjs";
+import { execSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, writeFile, rm, appendFile } from "node:fs/promises";
+import { drivers, resolveBackend } from "./drivers/index.mjs";
 import { approvalPin } from "./drivers/codex.mjs";
+import {
+  EVALS_DIR, REPO_DIR, cliArgs, loadDotEnv, assertBackendFlags,
+  spawnVaultServer, seedScope, VAULT_TOOLS, VAULT_READ_TOOLS,
+  PROMPTS_VERSION, ingestPrompt, qaVaultPrompt, qaClosedBookPrompt,
+  qaFullContextPrompt, judgePrompt, healthCheck,
+} from "./lib.mjs";
 
 loadDotEnv(); // evals/.env — endpoints/keys per provider; real env vars win
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-const EVALS_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_DIR = resolve(EVALS_DIR, "..");
-const SERVER = join(REPO_DIR, "server.mjs");
 const RESULTS_DIR = join(EVALS_DIR, "results");
-const PROMPTS_VERSION = 2; // bump when any prompt template below changes
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const argv = process.argv.slice(2);
-const flag = (name) => argv.includes(`--${name}`);
-const opt = (name, dflt) => {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : dflt;
-};
+const { opt, flag } = cliArgs();
 
 const cfg = {
   suite: opt("suite", "micro"),
@@ -83,6 +82,8 @@ const cfg = {
   noCache: flag("no-cache"),
   keepVault: flag("keep-vault"),
   bare: flag("bare"),
+  only: opt("only", null), // null = full run; "health" = ingest+health only; "judge" = re-judge cached answers
+
   conv: opt("conv", null), // run a single conversation: 1-based index or id
   qaConcurrency: Number(opt("qa-concurrency", 4)),
   ingestTimeoutMs: Number(opt("ingest-timeout", 300_000)),
@@ -92,13 +93,12 @@ const cfg = {
 
 if (!drivers[cfg.harness]) throw new Error(`unknown --harness ${cfg.harness} (have: ${Object.keys(drivers).join(", ")})`);
 if (cfg.memory !== "vault") throw new Error(`--memory ${cfg.memory} not implemented yet (only "vault")`);
-if (cfg.baseUrl && cfg.provider === "native")
-  throw new Error("--base-url requires --provider <tag> (a short label like dashscope/vast for cell naming)");
-// A custom provider needs an EXPLICIT --model — checked before the claude
-// alias default below, so `--provider dashscope` can't silently send "sonnet"
-// to a backend that has no such model.
-if (cfg.provider !== "native" && !cfg.model)
-  throw new Error(`--provider ${cfg.provider} requires an explicit --model (the backend won't have the CLI's default)`);
+if (cfg.only && !["health", "judge"].includes(cfg.only))
+  throw new Error(`--only ${cfg.only}: expected "health" or "judge"`);
+// Backend flag validation is shared with smoke.mjs (lib.mjs). It must run
+// before the claude alias default below, so `--provider dashscope` can't
+// silently send "sonnet" to a backend that has no such model.
+assertBackendFlags(cfg);
 if (cfg.harness === "claude") cfg.model ??= "sonnet";
 // Fill baseUrl/apiKeyEnv from the evals/.env provider profile when not given
 // explicitly (throws if the provider has no URL for this harness's wire format).
@@ -173,36 +173,7 @@ async function loadSuite(name) {
   throw new Error(`unknown suite: ${name}`);
 }
 
-// ── Server lifecycle ──────────────────────────────────────────────────────────
-
-async function spawnServer(memoryDir) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const proc = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, MEMORY_DIR: memoryDir, VAULT_PORT: String(port) },
-    stdio: "ignore",
-  });
-  const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(`${base}/mcp`, { method: "GET" }); // any response (405 included) = up
-      return { port, base, kill: () => proc.kill() };
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  proc.kill();
-  throw new Error("server did not come up");
-}
-
 // ── Headless agent runners (per-harness drivers in ./drivers/) ────────────────
-
-// Full tool surface the server exposes (src/store.mjs). The read-only subset
-// matters: the server's own instructions advertise `search`, and a model that
-// keeps calling a denied tool can spin until timeout (seen with qwen via
-// DashScope; sonnet happened to stick to `view`).
-const VAULT_TOOLS = ["view", "search", "create", "str_replace", "insert", "delete", "rename"]
-  .map((t) => `mcp__vault__${t}`);
-const VAULT_READ_TOOLS = ["mcp__vault__view", "mcp__vault__search"];
 
 let workDir; // sterile cwd shared by all calls — no project CLAUDE.md, no .mcp.json
 
@@ -221,43 +192,8 @@ delete judgeEnv.ANTHROPIC_BASE_URL;
 delete judgeEnv.ANTHROPIC_AUTH_TOKEN;
 const runJudge = (o) => drivers.claude.run({ bare: false, workDir, env: judgeEnv, ...o });
 
-// ── Prompts (versioned via PROMPTS_VERSION) ───────────────────────────────────
-
-const ingestPrompt = (session) =>
-  `A session is ending. Below is its complete transcript, dated ${session.date}.
-Persist to your memory directory whatever your memory instructions say is worth persisting from this session. Do not answer the transcript; just do the memory work, then reply "done".
-
---- TRANSCRIPT (${session.date}) ---
-${session.transcript.join("\n")}
---- END TRANSCRIPT ---`;
-
-const qaVaultPrompt = (q, today) =>
-  `Today is ${today}. Using only your memory directory, answer the user's question. If the answer is not in your memory, say plainly that you don't know. Answer in one or two sentences.
-
-Question: ${q.question}`;
-
-const qaClosedBookPrompt = (q, today) =>
-  `Today is ${today}. Answer the user's question about their project in one or two sentences. If you don't know, say plainly that you don't know.
-
-Question: ${q.question}`;
-
-const qaFullContextPrompt = (q, today, conv) =>
-  `Today is ${today}. Below are the complete transcripts of your past sessions with the user. Using them, answer the question in one or two sentences. If the transcripts don't contain the answer, say plainly that you don't know.
-
-${conv.sessions.map((s) => `--- SESSION (${s.date}) ---\n${s.transcript.join("\n")}`).join("\n\n")}
-
-Question: ${q.question}`;
-
-const judgePrompt = (q, answer) =>
-  `You are grading a candidate answer against a gold answer. Be strict but fair: the candidate is correct if it states the same essential fact(s) as the gold answer; extra detail is fine, contradicting or missing the essential fact is not.
-
-Special rule: if the gold answer is "NOT_IN_MEMORY", the candidate is correct only if it declines to answer / says it doesn't know. Any invented substantive answer is incorrect.
-
-Question: ${q.question}
-Gold answer: ${q.gold}
-Candidate answer: ${answer}
-
-Reply with ONLY this JSON, nothing else: {"verdict":"correct"|"incorrect","reason":"<one sentence>"}`;
+// Prompts (versioned via PROMPTS_VERSION) live in lib.mjs so smoke and the
+// vast probe exercise the exact templates the cells use.
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
@@ -269,67 +205,51 @@ async function cached(unitId, compute) {
   return value;
 }
 
-// ── Vault health checks (deterministic, no judge) ─────────────────────────────
-
-async function walkMd(dir, base = dir) {
-  let files = [];
-  for (const e of await readdir(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) files = files.concat(await walkMd(p, base));
-    else if (e.name.endsWith(".md")) files.push(p.slice(base.length + 1));
-  }
-  return files;
-}
-
-async function healthCheck(scopeDir, questions) {
-  const issues = [];
-  const files = existsSync(scopeDir) ? await walkMd(scopeDir) : [];
-  const memories = files.filter((f) => f !== "MEMORY.md");
-  let indexLinks = [];
-  if (!files.includes("MEMORY.md")) issues.push("no MEMORY.md index");
-  else {
-    const idx = await readFile(join(scopeDir, "MEMORY.md"), "utf8");
-    indexLinks = [...idx.matchAll(/\]\(([^)]+\.md)\)/g)].map((m) => m[1]);
-    for (const f of memories) if (!indexLinks.includes(f)) issues.push(`unindexed file: ${f}`);
-    for (const l of indexLinks) if (!memories.includes(l)) issues.push(`dangling index line: ${l}`);
-  }
-  const names = new Map();
-  const bodies = {};
-  for (const f of memories) {
-    const text = await readFile(join(scopeDir, f), "utf8");
-    bodies[f] = text;
-    if (!/^---\n[\s\S]*?\bname:/m.test(text)) issues.push(`missing name: frontmatter: ${f}`);
-    if (!/\bdescription:/.test(text)) issues.push(`missing description: frontmatter: ${f}`);
-    const name = text.match(/\bname:\s*(\S+)/)?.[1];
-    if (name) {
-      if (names.has(name)) issues.push(`duplicate name slug "${name}": ${names.get(name)} and ${f}`);
-      names.set(name, f);
-    }
-  }
-  // Stale-fact survival: a file that mentions the old value in context but never
-  // the new value is presenting superseded knowledge as current.
-  let staleFacts = 0;
-  for (const q of questions) {
-    if (!q.staleCheck) continue;
-    const { context, old: oldV, new: newV } = q.staleCheck;
-    for (const [f, text] of Object.entries(bodies)) {
-      const t = text.toLowerCase();
-      if (t.includes(context) && t.includes(oldV) && !t.includes(newV)) {
-        staleFacts++;
-        issues.push(`stale fact (${q.id}): ${f} mentions "${oldV}" (${context}) without "${newV}"`);
-      }
-    }
-  }
-  const bytes = (await Promise.all(memories.map((f) => stat(join(scopeDir, f))))).reduce((a, s) => a + s.size, 0);
-  return { files: memories.length, bytes, staleFacts, issues };
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 const out = [];
 const emit = async (rec) => { out.push(rec); await appendFile(RESULTS_FILE, JSON.stringify(rec) + "\n"); };
 
 const git = (cmd) => { try { return execSync(cmd, { cwd: REPO_DIR }).toString().trim(); } catch { return "unknown"; } };
+
+// --only judge never talks to the QA backend or the vault server — it re-runs
+// the judge (always the claude driver) over this config's cached answers.
+const judgeOnly = cfg.only === "judge";
+
+// One QA call for a unit: prompt shape by system, vault access only for "vault".
+const askQA = (q, system, conv, server, today) => runAgent({
+  prompt:
+    system === "vault" ? qaVaultPrompt(q, today) :
+    system === "closed_book" ? qaClosedBookPrompt(q, today) :
+    qaFullContextPrompt(q, today, conv),
+  mcpUrl: system === "vault" ? `${server.base}/mcp/${q.conv}` : null,
+  allowedTools: system === "vault" ? VAULT_READ_TOOLS : [], // QA is read-only
+  model: cfg.model,
+  timeoutMs: cfg.qaTimeoutMs,
+  label: `qa-${q.id}-${system}`,
+});
+
+// Rate-limit/API/spend-limit failures come back as exit-0 "answers" — treat as
+// errors (thrown = not cached) so they're retried, never judged.
+const apiFail = /^API Error|spend limit|usage limit/i;
+
+// Judge one answer against gold — the standalone half of a unit, so --only
+// judge can re-run it over cached answers without re-running QA.
+async function judgeAnswer(q, system, answer) {
+  const j = await runJudge({
+    prompt: judgePrompt(q, answer),
+    mcpUrl: null, allowedTools: [],
+    model: cfg.judgeModel,
+    timeoutMs: cfg.judgeTimeoutMs,
+    label: `judge-${q.id}-${system}`,
+  });
+  if (j.isError || apiFail.test(j.text ?? ""))
+    throw new Error(`judge call failed: ${String(j.text).slice(0, 150)}`);
+  let verdict = { verdict: "unparseable", reason: j.text.slice(0, 200) };
+  const m = j.text.match(/\{[\s\S]*\}/);
+  if (m) { try { verdict = JSON.parse(m[0]); } catch {} }
+  return { verdict: verdict.verdict, reason: verdict.reason, judgeCostUsd: j.costUsd, judgeModels: j.models };
+}
 
 async function main() {
   await mkdir(CELL_DIR, { recursive: true });
@@ -339,7 +259,7 @@ async function main() {
 
   // Fail fast if the backend endpoint is unreachable (e.g. the local LiteLLM
   // shim isn't running) instead of erroring per-call mid-run.
-  if (cfg.baseUrl) {
+  if (cfg.baseUrl && !judgeOnly) {
     try { await fetch(cfg.baseUrl, { signal: AbortSignal.timeout(5000) }); }
     catch (e) {
       if (e?.cause?.code === "ECONNREFUSED" || e?.name === "TimeoutError")
@@ -356,7 +276,7 @@ async function main() {
   }
   const today = new Date().toISOString().slice(0, 10);
 
-  const codexPin = cfg.harness === "codex" ? await approvalPin() : null;
+  const codexPin = cfg.harness === "codex" && !judgeOnly ? await approvalPin() : null;
   const contamination = [
     cfg.bare ? "QA bare mode (clean room)" : "subscription mode: global ~/.claude/CLAUDE.md auto-loads into eval agents",
     "judge: always claude subscription mode (non-bare), custom-backend env scrubbed",
@@ -381,6 +301,7 @@ async function main() {
     judgeModel: cfg.judgeModel,
     qaReadTools: VAULT_READ_TOOLS, // locomo-c*-sonnet (Aug 19) ran view-only
     bare: cfg.bare,
+    ...(cfg.only ? { only: cfg.only } : {}),
     contamination,
     ...(cfg.harness === "codex" ? { codexApprovalPin: codexPin?.name ?? "none (using default candidate)" } : {}),
     harnessGitSha: git("git rev-parse HEAD"),
@@ -393,26 +314,29 @@ async function main() {
     date: new Date().toISOString(),
   });
 
-  const memoryDir = await mkdtemp(join(tmpdir(), "vault-eval-mem-"));
-  const server = await spawnServer(memoryDir);
-  console.log(`server on :${server.port}, vault at ${memoryDir}`);
+  let memoryDir = null, server = null;
+  if (!judgeOnly) {
+    memoryDir = await mkdtemp(join(tmpdir(), "vault-eval-mem-"));
+    server = await spawnVaultServer(memoryDir);
+    console.log(`server on :${server.port}, vault at ${memoryDir}`);
+  }
 
   try {
     // ── Ingest (resumable per session: snapshot the vault after each one) ──
-    for (const conv of suite.conversations) {
+    for (const conv of judgeOnly ? [] : suite.conversations) {
       const scopeDir = join(memoryDir, conv.id);
       const snapAt = (n) => join(CACHE_DIR, `vault-${conv.id}-s${n}.tgz`);
       let start = 0;
       if (!cfg.noCache)
         for (let n = conv.sessions.length; n >= 1; n--)
           if (existsSync(snapAt(n))) { start = n; break; }
-      await mkdir(scopeDir, { recursive: true });
       if (start > 0) {
+        await mkdir(scopeDir, { recursive: true });
         execSync(`tar -xzf "${snapAt(start)}" -C "${scopeDir}"`);
         console.log(`[ingest] ${conv.id}: restored cache through session ${start}/${conv.sessions.length}`);
         await emit({ type: "ingest", conv: conv.id, fromCache: true, throughSession: start });
       } else {
-        await writeFile(join(scopeDir, "MEMORY.md"), `# Memory index — ${conv.id}\n\n`);
+        await seedScope(memoryDir, conv.id);
       }
       for (let i = start; i < conv.sessions.length; i++) {
         const session = conv.sessions[i];
@@ -441,6 +365,11 @@ async function main() {
       execSync(`tar -czf "${join(CELL_DIR, `${configTag}-${conv.id}.vault.tgz`)}" -C "${scopeDir}" .`);
     }
 
+    if (cfg.only === "health") {
+      console.log(`\n--only health: skipped QA/judge. results: ${RESULTS_FILE}`);
+      return;
+    }
+
     // ── QA + judge (worker pool; per-unit errors don't kill the run) ──
     const systems = ["vault", ...(cfg.baselines ? ["closed_book", "full_context"] : [])];
     const units = suite.questions.flatMap((q) => systems.map((system) => ({ q, system })));
@@ -450,47 +379,32 @@ async function main() {
       while (next < units.length) {
         const { q, system } = units[next++];
         const conv = suite.conversations.find((c) => c.id === q.conv);
+        const unitId = `${q.id}-${system}`;
         let rec;
         try {
-          rec = await cached(`${q.id}-${system}`, async () => {
-            const prompt =
-              system === "vault" ? qaVaultPrompt(q, today) :
-              system === "closed_book" ? qaClosedBookPrompt(q, today) :
-              qaFullContextPrompt(q, today, conv);
-            const a = await runAgent({
-              prompt,
-              mcpUrl: system === "vault" ? `${server.base}/mcp/${q.conv}` : null,
-              allowedTools: system === "vault" ? VAULT_READ_TOOLS : [], // QA is read-only
-              model: cfg.model,
-              timeoutMs: cfg.qaTimeoutMs,
-              label: `qa-${q.id}-${system}`,
+          if (judgeOnly) {
+            // Re-judge this config's cached answer, rewriting the cached record
+            // so later full runs see the new verdict too.
+            const file = join(CACHE_DIR, `${unitId}.json`);
+            if (!existsSync(file))
+              throw new Error("no cached answer for this unit — run the suite (without --only judge) first");
+            const prev = JSON.parse(await readFile(file, "utf8"));
+            rec = { ...prev, ...(await judgeAnswer(q, system, prev.answer)) };
+            await writeFile(file, JSON.stringify(rec));
+          } else {
+            rec = await cached(unitId, async () => {
+              const a = await askQA(q, system, conv, server, today);
+              // Empty answers are errors too: codex+small models occasionally end
+              // a turn without a final message event — a flake, not an answer.
+              if (a.isError || !String(a.text ?? "").trim() || apiFail.test(a.text ?? ""))
+                throw new Error(`qa call failed: ${a.isError ? String(a.text).slice(0, 150) : "empty answer"}`);
+              return {
+                id: q.id, system, category: q.category, question: q.question, gold: q.gold,
+                answer: a.text, ...(await judgeAnswer(q, system, a.text)),
+                qaTurns: a.numTurns, qaCostUsd: a.costUsd, qaUsage: a.usage, qaModels: a.models, qaDurationMs: a.durationMs,
+              };
             });
-            // Rate-limit/API/spend-limit failures come back as exit-0 "answers" —
-            // treat as errors (thrown = not cached) so they're retried, never judged.
-            // Same for empty answers: codex+small models occasionally end a turn
-            // without a final message event — that's a flake, not an answer.
-            const apiFail = /^API Error|spend limit|usage limit/i;
-            if (a.isError || !String(a.text ?? "").trim() || apiFail.test(a.text ?? ""))
-              throw new Error(`qa call failed: ${a.isError ? String(a.text).slice(0, 150) : "empty answer"}`);
-            const j = await runJudge({
-              prompt: judgePrompt(q, a.text),
-              mcpUrl: null, allowedTools: [],
-              model: cfg.judgeModel,
-              timeoutMs: cfg.judgeTimeoutMs,
-              label: `judge-${q.id}-${system}`,
-            });
-            if (j.isError || apiFail.test(j.text ?? ""))
-              throw new Error(`judge call failed: ${String(j.text).slice(0, 150)}`);
-            let verdict = { verdict: "unparseable", reason: j.text.slice(0, 200) };
-            const m = j.text.match(/\{[\s\S]*\}/);
-            if (m) { try { verdict = JSON.parse(m[0]); } catch {} }
-            return {
-              id: q.id, system, category: q.category, question: q.question, gold: q.gold,
-              answer: a.text, verdict: verdict.verdict, reason: verdict.reason,
-              qaTurns: a.numTurns, qaCostUsd: a.costUsd, qaUsage: a.usage, qaModels: a.models, qaDurationMs: a.durationMs,
-              judgeCostUsd: j.costUsd, judgeModels: j.models,
-            };
-          });
+          }
         } catch (e) {
           rec = { id: q.id, system, category: q.category, question: q.question, gold: q.gold, answer: null, verdict: "error", reason: String(e).slice(0, 300) };
         }
@@ -510,9 +424,11 @@ async function main() {
     for (const [system, t] of Object.entries(tally)) console.log(`${system}: ${t.correct}/${t.total}`);
     console.log(`results: ${RESULTS_FILE}`);
   } finally {
-    server.kill();
-    if (cfg.keepVault) console.log(`vault kept at ${memoryDir}`);
-    else await rm(memoryDir, { recursive: true, force: true });
+    server?.kill();
+    if (memoryDir) {
+      if (cfg.keepVault) console.log(`vault kept at ${memoryDir}`);
+      else await rm(memoryDir, { recursive: true, force: true });
+    }
     await rm(workDir, { recursive: true, force: true });
   }
 }

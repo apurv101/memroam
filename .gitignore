@@ -11,6 +11,7 @@ build/
 .env
 .env.*
 !evals/.env.example
+evals/.vast.env
 
 # Node
 node_modules/
@@ -31,3 +32,5 @@ data/
 # each cell folder evals/results/<cell>/ carries its own .cache/)
 evals/datasets/
 evals/results/**/.cache/
+evals_memory_arena/datasets/
+evals_memory_arena/results/**/.cache/

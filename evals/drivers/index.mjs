@@ -29,29 +29,14 @@
 // the judge is the measurement instrument and must stay constant across cells.
 
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import * as claude from "./claude.mjs";
 import * as codex from "./codex.mjs";
 
 export const drivers = { claude, codex };
 
-// ── Backend config (evals/.env) ───────────────────────────────────────────────
-//
-// evals/.env (gitignored; template in evals/.env.example) holds endpoints and
-// keys for every provider. Real environment variables always win over the file.
-export function loadDotEnv(file = join(dirname(fileURLToPath(import.meta.url)), "..", ".env")) {
-  if (!existsSync(file)) return false;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m || line.trim().startsWith("#")) continue;
-    const value = m[2].replace(/^["']|["']$/g, "");
-    if (!(m[1] in process.env)) process.env[m[1]] = value;
-  }
-  return true;
-}
+// Env-file loading (evals/.env, evals/.vast.env) lives in ../lib.mjs
+// (loadDotEnv) — entry points call it before touching resolveBackend.
 
 // Provider profiles by naming convention, so `--provider dashscope` needs no
 // further flags once evals/.env is filled in:
