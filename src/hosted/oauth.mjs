@@ -24,7 +24,7 @@ import {
   sha256,
   takeCode,
 } from "./db.mjs";
-import { appCreds, exchangeUserCode, ghApi, mintInstallationToken, verifyInstallation } from "./github-auth.mjs";
+import { appCreds, exchangeUserCode, findUserInstallation, ghApi, mintInstallationToken, verifyInstallation } from "./github-auth.mjs";
 import { consentPage, errorPage, installProblemPage } from "./pages.mjs";
 import { uuidv7 } from "../store.mjs";
 
@@ -183,10 +183,23 @@ export async function githubCallback(base, q) {
     user = { ...user, installation_id: "", repo_full_name: "", repo_id: "" };
     await putUser(user);
   }
-  // First-time (or broken) installation: GitHub's install picker is the repo
-  // consent screen; state rides through to the Setup URL.
-  await putAuthreq(q.state, { ...req, stage: "signed-in", user_id: user.user_id });
   const creds = await appCreds();
+  // GitHub may hold a live installation our record doesn't know about (the
+  // setup callback never completed, or the record was reset above). Adopt it
+  // directly — sending the user to installations/new would dead-end on the
+  // configure page.
+  const existingId = await findUserInstallation(identity.login);
+  if (existingId) {
+    const check = await verifyInstallation(existingId, user.github_id);
+    if (check.error) return html(400, installProblemPage(check.error, creds.slug));
+    user = { ...user, installation_id: existingId, repo_full_name: check.repo_full_name, repo_id: check.repo_id };
+    await putUser(user);
+    await bootstrapIfEmpty(user).catch(() => {});
+    return renderConsent(q.state, req, user);
+  }
+  // First-time installation: GitHub's install picker is the repo consent
+  // screen; state rides through to the Setup URL.
+  await putAuthreq(q.state, { ...req, stage: "signed-in", user_id: user.user_id });
   return redirect(`https://github.com/apps/${creds.slug}/installations/new?state=${encodeURIComponent(q.state)}`);
 }
 
