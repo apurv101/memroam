@@ -4,10 +4,22 @@
 import { mkdir, readdir, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export let MEMORY_DIR = resolve(process.env.MEMORY_DIR ?? "./memory");
 export const PORT = Number(process.env.VAULT_PORT ?? 8787);
+
+// Default store location. Installs from the memroam era keep their existing
+// ~/.memroam store; everyone else gets ~/.memory-vault. MEMORY_DIR (and the
+// registry's recorded store path) always take precedence — this is only the
+// last-resort default.
+export function defaultStoreDir() {
+  const preferred = join(homedir(), ".memory-vault");
+  if (existsSync(preferred)) return preferred;
+  const legacy = join(homedir(), ".memroam");
+  return existsSync(legacy) ? legacy : preferred;
+}
 
 // Several processes can share the store (stdio instances, the HTTP server),
 // so every write lands via temp-file + rename — a reader never sees a torn file.
@@ -33,7 +45,7 @@ export class JsonRpcError extends Error {
 const scopeDir = (scope) => join(MEMORY_DIR, scope);
 let SHARED_DIR = join(MEMORY_DIR, "shared");
 
-// stdio mode resolves its store at startup (env → registry → ~/.memory-vault)
+// stdio mode resolves its store at startup (env → registry → defaultStoreDir())
 // rather than trusting the ./memory default, which is only right for `serve`
 // run from the vault repo itself.
 export function setMemoryDir(dir) {
@@ -86,13 +98,29 @@ function rel(abs, scope) {
 const INDEX_FILE = "MEMORY.md";
 const isIndex = (abs) => basename(abs) === INDEX_FILE;
 
-function parseFrontmatter(text) {
+export function parseFrontmatter(text) {
   if (!text.startsWith("---\n")) return null;
   const end = text.indexOf("\n---", 4);
   if (end === -1) return null;
   const block = text.slice(4, end);
   const get = (key) => block.match(new RegExp(`^${key}:[ \\t]*(.+)$`, "m"))?.[1].trim();
   return { name: get("name"), description: get("description") };
+}
+
+// Pure index projection, shared with the hosted (GitHub-backed) store so the
+// two can never disagree on MEMORY.md's format.
+export function indexRow(fileName, text) {
+  const fm = parseFrontmatter(text);
+  return fm?.name && fm?.description
+    ? { key: fm.name, line: `- [${fm.name}](${fileName}) — ${fm.description}` }
+    : { key: fileName, line: `- [${fileName}](${fileName}) — ⚠ no frontmatter` };
+}
+
+export function indexContent(space, rows) {
+  rows.sort((a, b) => a.key.localeCompare(b.key));
+  const title = space === "shared" ? "# shared — org-wide memory index" : `# ${space} — memory index`;
+  const body = rows.length ? rows.map((r) => r.line).join("\n") : "(no memories in this space yet)";
+  return `${title}\n\n${body}\n`;
 }
 
 export async function regenerateIndex(space) {
@@ -102,17 +130,9 @@ export async function regenerateIndex(space) {
   const rows = [];
   for (const e of entries) {
     if (!e.isFile() || !e.name.endsWith(".md") || e.name === INDEX_FILE || e.name.startsWith(".")) continue;
-    const fm = parseFrontmatter(await readFile(join(dir, e.name), "utf8").catch(() => ""));
-    rows.push(
-      fm?.name && fm?.description
-        ? { key: fm.name, line: `- [${fm.name}](${e.name}) — ${fm.description}` }
-        : { key: e.name, line: `- [${e.name}](${e.name}) — ⚠ no frontmatter` },
-    );
+    rows.push(indexRow(e.name, await readFile(join(dir, e.name), "utf8").catch(() => "")));
   }
-  rows.sort((a, b) => a.key.localeCompare(b.key));
-  const title = space === "shared" ? "# shared — org-wide memory index" : `# ${space} — memory index`;
-  const body = rows.length ? rows.map((r) => r.line).join("\n") : "(no memories in this space yet)";
-  await atomicWrite(join(dir, INDEX_FILE), `${title}\n\n${body}\n`);
+  await atomicWrite(join(dir, INDEX_FILE), indexContent(space, rows));
 }
 
 // Regenerate the index of every space a mutation touched. A path directly at
@@ -135,7 +155,7 @@ const INDEX_EDIT_ERROR =
 // stamps it when the frontmatter lacks one, so no file class without identity
 // ever exists. The slug/filename stays mutable; rename never touches id.
 
-function uuidv7() {
+export function uuidv7() {
   const b = randomBytes(16);
   const ts = BigInt(Date.now());
   for (let i = 0; i < 6; i++) b[i] = Number((ts >> BigInt(8 * (5 - i))) & 0xffn);
@@ -167,6 +187,86 @@ export function stampId(text) {
 // in search, labeled. They are never silently deleted: the gardener marks
 // them promoted/superseded and may archive superseded ones later.
 const isCandidate = (relPath) => relPath.split("/").includes("candidates");
+
+// Pure per-file scorer, shared with the hosted store: returns a hit for the
+// results list, or null when no term matches. `path` is the vault-relative
+// path used for display and tie-break ordering.
+export function scoreMemory(path, fileName, text, terms) {
+  const fm = parseFrontmatter(text) ?? {};
+  const fmName = fm.name ?? "";
+  const description = fm.description ?? "";
+  const nameHay = `${fmName} ${fileName}`.toLowerCase();
+  const descHay = description.toLowerCase();
+  const bodyHay = text.toLowerCase();
+  let matched = 0;
+  let score = 0;
+  for (const t of terms) {
+    const inName = nameHay.includes(t);
+    const inDesc = descHay.includes(t);
+    const inBody = bodyHay.includes(t);
+    if (!inName && !inDesc && !inBody) continue;
+    matched++;
+    score += (inName ? 5 : 0) + (inDesc ? 3 : 0) + (inBody ? 1 : 0);
+  }
+  if (matched === 0) return null;
+  let snippet = "";
+  const lines = text.split("\n");
+  outer: for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    for (const t of terms) {
+      if (line.includes(t)) {
+        snippet = `${i + 1}: ${lines[i].trim()}`;
+        break outer;
+      }
+    }
+  }
+  return { path, name: fmName, description, matched, score, snippet };
+}
+
+const MAX_RESULTS = 20;
+const sortHits = (hits) =>
+  hits.sort((a, b) => b.matched - a.matched || b.score - a.score || a.path.localeCompare(b.path));
+
+export function renderSearch(hits, query, where) {
+  sortHits(hits);
+  if (hits.length === 0) return `No matches for "${query}" ${where}.`;
+  const rows = hits.slice(0, MAX_RESULTS).map((h) => {
+    const tag = isCandidate(h.path) ? "[candidate] " : "";
+    const head = `${tag}${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
+    return h.snippet ? `${head}\n    ${h.snippet}` : head;
+  });
+  const capNote =
+    hits.length > MAX_RESULTS ? `\n(${hits.length - MAX_RESULTS} more matches not shown — refine the query)` : "";
+  return `${hits.length} match${hits.length === 1 ? "" : "es"} for "${query}" ${where}\n\n${rows.join("\n")}${capNote}`;
+}
+
+// OpenAI-connector search shape ({results: [{id, title, url}]}): same ordering
+// and cap as renderSearch. `url` must be non-empty for ChatGPT to cite a
+// result — the hosted store passes GitHub blob URLs; local stores have no web
+// URL and pass nothing.
+export function searchResultsPayload(hits, toUrl = () => "") {
+  return {
+    results: sortHits(hits)
+      .slice(0, MAX_RESULTS)
+      .map((h) => ({
+        id: h.path,
+        title: [h.name || h.path.split("/").pop(), h.description].filter(Boolean).join(": "),
+        url: toUrl(h.path),
+      })),
+  };
+}
+
+// OpenAI-connector fetch shape for one memory file.
+export function fetchPayload(path, text, url = "") {
+  const fm = parseFrontmatter(text) ?? {};
+  return {
+    id: path,
+    title: fm.name || path.split("/").pop(),
+    text,
+    url,
+    metadata: fm.description ? { description: fm.description } : {},
+  };
+}
 
 // ── search (S2) ───────────────────────────────────────────────────────────────
 //
@@ -201,6 +301,7 @@ export const TOOLS = [
       },
       required: ["path"],
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: "search",
@@ -214,6 +315,20 @@ export const TOOLS = [
       },
       required: ["query"],
     },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "fetch",
+    description:
+      "Fetch one memory file in full by its id — the vault-relative path that search results and MEMORY.md entries use (e.g. 'shared/some-memory.md'). Returns the complete contents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The memory's id: its path relative to the memory root" },
+      },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true },
   },
   {
     name: "create",
@@ -334,48 +449,21 @@ export async function callTool(name, args, scope) {
       for (const abs of files) {
         const text = await readFile(abs, "utf8").catch(() => null);
         if (text === null) continue;
-        const fm = parseFrontmatter(text) ?? {};
-        const fmName = fm.name ?? "";
-        const description = fm.description ?? "";
-        const nameHay = `${fmName} ${basename(abs)}`.toLowerCase();
-        const descHay = description.toLowerCase();
-        const bodyHay = text.toLowerCase();
-        let matched = 0;
-        let score = 0;
-        for (const t of terms) {
-          const inName = nameHay.includes(t);
-          const inDesc = descHay.includes(t);
-          const inBody = bodyHay.includes(t);
-          if (!inName && !inDesc && !inBody) continue;
-          matched++;
-          score += (inName ? 5 : 0) + (inDesc ? 3 : 0) + (inBody ? 1 : 0);
-        }
-        if (matched === 0) continue;
-        let snippet = "";
-        const lines = text.split("\n");
-        outer: for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].toLowerCase();
-          for (const t of terms) {
-            if (line.includes(t)) {
-              snippet = `${i + 1}: ${lines[i].trim()}`;
-              break outer;
-            }
-          }
-        }
-        hits.push({ path: relative(MEMORY_DIR, abs), name: fmName, description, matched, score, snippet });
+        const hit = scoreMemory(relative(MEMORY_DIR, abs), basename(abs), text, terms);
+        if (hit) hits.push(hit);
       }
-      hits.sort((a, b) => b.matched - a.matched || b.score - a.score || a.path.localeCompare(b.path));
       const where = args.space ? `in ${relative(MEMORY_DIR, root)}/` : "vault-wide";
-      if (hits.length === 0) return `No matches for "${query}" ${where}.`;
-      const MAX_RESULTS = 20;
-      const rows = hits.slice(0, MAX_RESULTS).map((h) => {
-        const tag = isCandidate(h.path) ? "[candidate] " : "";
-        const head = `${tag}${h.path}${h.name ? ` — ${h.name}` : ""}${h.description ? `: ${h.description}` : ""}`;
-        return h.snippet ? `${head}\n    ${h.snippet}` : head;
-      });
-      const capNote =
-        hits.length > MAX_RESULTS ? `\n(${hits.length - MAX_RESULTS} more matches not shown — refine the query)` : "";
-      return `${hits.length} match${hits.length === 1 ? "" : "es"} for "${query}" ${where}\n\n${rows.join("\n")}${capNote}`;
+      return { text: renderSearch(hits, query, where), structuredContent: searchResultsPayload(hits) };
+    }
+
+    case "fetch": {
+      const id = String(args.id ?? "").trim();
+      if (!id) throw new ToolError("id is required");
+      const abs = resolvePath(id, scope);
+      const st = await stat(abs).catch(() => null);
+      if (!st || st.isDirectory()) throw new ToolError(`not found: ${id}`);
+      const payload = fetchPayload(relative(MEMORY_DIR, abs), await readFile(abs, "utf8"));
+      return { text: JSON.stringify(payload), structuredContent: payload };
     }
 
     case "create": {

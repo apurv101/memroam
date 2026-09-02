@@ -3,14 +3,14 @@
 
 export const instructionsFor = (scope) =>
   scope
-    ? `You have a persistent memory vault. This session's project space is "${scope}" — relative paths read and write there. MEMORY.md at its root is this project's index — view it before starting work, and read any memory file it points to that looks relevant. The whole vault is visible: other projects' spaces can be addressed by path ("<space>/<file>"), and the root listing shows every space. When the index isn't enough, the search tool finds memories by keyword across the whole vault.
+    ? `You have a persistent memory vault. This session's project space is "${scope}" — relative paths read and write there. MEMORY.md at its root is this project's index — view it before starting work, and read any memory file it points to that looks relevant. The whole vault is visible: other projects' spaces can be addressed by path ("<space>/<file>"), and the root listing shows every space. When the index isn't enough, the search tool finds memories by keyword across the whole vault, and fetch returns any memory in full by its id (its path). At the start of a conversation, recall what's relevant to the topic; before it ends, save what should be remembered.
 
 Each memory is one markdown file holding one fact, with frontmatter (name: kebab-case slug, description: one-line summary), stored at the root of the directory. MEMORY.md is generated automatically from that frontmatter — never edit it directly; write a sharp one-line description:, it becomes the index line. Before saving, check whether an existing file already covers it — update that file rather than creating a duplicate; delete memories that turn out to be wrong.
 
 The shared/ directory is org-wide memory visible to every project, with its own shared/MEMORY.md index — check it for relevant org facts, and store facts that apply beyond this project there.
 
 Store durable facts, corrections, lessons, and decisions — things that should outlive this session and be visible to every future session in every harness. Don't store what the repo or chat history already records.`
-    : `You are viewing the whole memory vault. Each subdirectory is one project's memory space with its own MEMORY.md index; shared/ is org-wide memory visible to every project. The root MEMORY.md lists the spaces — view it and the relevant space's MEMORY.md before starting work. When the indexes aren't enough, the search tool finds memories by keyword across the whole vault.
+    : `You are viewing the whole memory vault. Each subdirectory is one project's memory space with its own MEMORY.md index; shared/ is org-wide memory visible to every project. The root MEMORY.md lists the spaces — view it and the relevant space's MEMORY.md before starting work. When the indexes aren't enough, the search tool finds memories by keyword across the whole vault, and fetch returns any memory in full by its id (its path). At the start of a conversation, recall what's relevant to the topic; before it ends, save what should be remembered.
 
 Each memory is one markdown file holding one fact, with frontmatter (name: kebab-case slug, description: one-line summary). Each space's MEMORY.md is generated automatically from that frontmatter — never edit it directly; write a sharp one-line description:, it becomes the index line. Before saving, check whether an existing file already covers it — update that file rather than creating a duplicate; delete memories that turn out to be wrong.
 
@@ -23,9 +23,11 @@ This repo uses the vault MCP server (\`vault\`) for persistent memory. At sessio
 
 // Markers around the written section let uninstall remove it verbatim even if
 // the section text changes in a future version. (Sections written before the
-// markers existed are removed by exact-text match instead.)
+// markers existed are removed by exact-text match instead.) Sections from the
+// memroam era carry that marker name — MARKED_SECTION_RE matches both.
 export const MARK_BEGIN = "<!-- memory-vault:begin -->";
 export const MARK_END = "<!-- memory-vault:end -->";
+export const MARKED_SECTION_RE = /(?:^|\n)<!-- (?:memroam|memory-vault):begin -->\n[\s\S]*?<!-- (?:memroam|memory-vault):end -->\n?/;
 export const MARKED_SECTION = `${MARK_BEGIN}\n${MEMORY_SECTION}${MARK_END}\n`;
 
 // The user-global ritual differs from the repo one: no fixed project name

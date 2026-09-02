@@ -1,6 +1,6 @@
 # Memory Vault
 
-Your coding agents don't share a memory. Memory Vault gives them one — teach Claude Code a convention, leave mid-task, and Codex picks up exactly where it stopped. No database, no embeddings: plain Markdown files on your machine, wired to every agent over MCP with one command.
+Your memory shouldn't be locked to one model. Memory Vault gives every AI agent you use — Claude Code, Codex, Cursor, ChatGPT, and friends — one shared, portable memory: teach a convention in one harness, switch to another mid-task, and it picks up exactly where you stopped. No database, no embeddings: plain Markdown files you own, wired to every agent over MCP with one command.
 
 ![Claude Code and Codex sharing one memory](demo.gif)
 
@@ -14,7 +14,9 @@ Memory Vault stores facts as ordinary Markdown files. Each project gets an isola
 claude mcp add --transport http --scope user vault https://memoryvault.click/mcp
 ```
 
-or add `https://memoryvault.click/mcp` as a custom connector in claude.ai, ChatGPT, Codex, or any Streamable-HTTP MCP client. On first connect you sign in with GitHub and install the memory-vault GitHub App on **exactly one private repository you own** — your memories live there as plain Markdown commits. Another computer or harness just adds the same connector: same memories, nothing to sync.
+or add `https://memoryvault.click/mcp` as a custom connector in claude.ai, ChatGPT, Codex, or any Streamable-HTTP MCP client (the server speaks OAuth 2.1 and implements the OpenAI search/fetch contract). On first connect you sign in with GitHub and install the memory-vault GitHub App on **exactly one private repository you own** — your memories live there as plain Markdown commits. The service keeps no copy of your memories and no standing credentials: repo access uses short-lived installation tokens minted per request, and uninstalling the App from the repository revokes everything.
+
+Another computer — or another harness on the same computer — just adds the same connector: same memories, nothing to sync. And because every memory is a plain Markdown file in your repo, you can clone it, grep it, edit it by hand, or take it anywhere. Losing access to the hosted tier never means losing your memory.
 
 **Local tier** — run the server on your own machine instead:
 
@@ -49,14 +51,16 @@ memory/
 
 A project connection reads and writes its own space by default, but the whole vault stays visible — other spaces are addressable by path, and the root listing shows every space. Scope is a routing default, not a wall. An unscoped connection starts at the vault root for cross-project maintenance.
 
-## Requirements
+## Local tier
+
+Everything below runs the same server on your own machine, storing memories in a local folder (default `~/.memory-vault`). Requirements — hosted tier needs none of this:
 
 - Node.js 18 or newer
 - An MCP client that supports stdio (global install) or Streamable HTTP (per-repo install)
 
 Memory Vault has no runtime dependencies.
 
-## Install globally (recommended)
+### Install globally
 
 Wire every harness on your machine once:
 
@@ -64,7 +68,7 @@ Wire every harness on your machine once:
 npx -y memory-vault install --global
 ```
 
-For each detected harness this writes a user-level stdio MCP registration and the memory ritual in its global rules file — Claude Code (`~/.claude.json` + `~/.claude/CLAUDE.md`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), DeepSeek Harness (`~/.dsh/AGENTS.md` + a stdio mount in every profile's `cordis.patch.yml`), OpenCode (`~/.config/opencode/opencode.json` + `AGENTS.md`), Gemini CLI (`~/.gemini/settings.json` + `~/.gemini/GEMINI.md`), and Antigravity (`~/.gemini/config/mcp_config.json` + an always-on rule in `~/.gemini/config/rules/`). After that, every session in every repository gets the vault with no per-repo setup: the harness spawns `memory-vault stdio` in the session's directory, and the server derives the project space from that directory automatically (the nearest `.git`, else the shallowest package manifest; no marker means the `default` space). The rule is the same for every harness: a `MEMORY_SPACE` env var on the server entry pins the space explicitly, else the client's MCP workspace roots name it (for harnesses that spawn MCP servers outside the session directory), else the directory decides. Detected spaces are recorded in `~/.memory-vault-connections.json` so they stay stable.
+For each detected harness this writes a user-level stdio MCP registration and the memory ritual in its global rules file — Claude Code (`~/.claude.json` + `~/.claude/CLAUDE.md`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), DeepSeek Harness (`~/.dsh/AGENTS.md` + a stdio mount in every profile's `cordis.patch.yml`), OpenCode (`~/.config/opencode/opencode.json` + `AGENTS.md`), Gemini CLI (`~/.gemini/settings.json` + `~/.gemini/GEMINI.md`), and Antigravity (`~/.gemini/config/mcp_config.json` + an always-on rule in `~/.gemini/config/rules/`). After that, every session in every repository gets the vault with no per-repo setup: the harness spawns `memory-vault stdio` in the session's directory, and the server derives the project space from that directory automatically (the nearest `.git`, else the shallowest package manifest; no marker means the `default` space). The rule is the same for every harness: a `MEMORY_SPACE` env var on the server entry pins the space explicitly, else the client's MCP workspace roots name it (for harnesses that spawn MCP servers outside the session directory), else the directory decides. Detected spaces are recorded in `~/.memory-vault-connections.json` so they stay stable (an existing `~/.memroam-connections.json` from the memroam-era releases is read and migrated on the next write).
 
 ```sh
 npx -y memory-vault install --global --dry-run        # preview changes
@@ -72,9 +76,9 @@ npx -y memory-vault install --global --store <dir>    # choose the store (defaul
 npx -y memory-vault uninstall --global                # undo exactly what install wrote
 ```
 
-Restart your sessions after installing. Per-repo `install` (below) remains for team-shared, committed configs or a custom space name.
+Restart your sessions after installing. Per-repo `install` (below) remains for team-shared, committed configs or a custom space name. An existing `~/.memroam` store from the memroam-era releases is detected and kept — nothing moves without you.
 
-## Install into a repository
+### Install into a repository
 
 Run this from the repository you want to connect:
 
@@ -88,7 +92,7 @@ This command:
 2. Asks which harnesses to wire up, with the detected ones pre-selected (interactive terminals only — everywhere else the detected set is used as is).
 3. Writes each chosen harness's MCP config and the shared rules files.
 
-By default, `install` stores memory in `~/.memory-vault` and derives the project name from the current directory. `connect` is an alias for `install`.
+By default, `install` stores memory in `~/.memory-vault` (an existing `~/.memroam` store is honored) and derives the project name from the current directory. `connect` is an alias for `install`.
 
 ```sh
 npx -y memory-vault install --dry-run                # preview changes
@@ -97,9 +101,9 @@ npx -y memory-vault install --harness claude,codex   # skip the prompt, pick exp
 npx -y memory-vault install --yes                    # skip the prompt, accept detected
 ```
 
-Restart your agent session after installing and approve the `vault` MCP server if prompted.
+Restart your agent session after installing and approve the `vault` MCP server if prompted (installs from the memroam-era releases registered it as `memroam`; rerunning `install` renames it).
 
-## Uninstall from a repository
+### Uninstall from a repository
 
 ```sh
 npx -y memory-vault uninstall
@@ -107,7 +111,7 @@ npx -y memory-vault uninstall
 
 Removes everything `install` wrote to the repository — the MCP entries, the rules sections, the dsh patch — deleting a file only when it held nothing else. Your memories are never touched, and the server keeps running for other projects. `disconnect` is an alias for `uninstall`.
 
-## Check the wiring
+### Check the wiring
 
 ```sh
 npx -y memory-vault status
@@ -115,7 +119,7 @@ npx -y memory-vault status
 
 Shows whether the server is up and which store it serves, how the current repository is wired per harness, and every repository recorded by `install` (kept in `~/.memory-vault-connections.json`). If the server is up and the repo is wired but your agent session has no vault tools, the remaining cause is session attachment — `status` prints how to fix it.
 
-## Connect without the installer
+### Connect without the installer
 
 `install` is a convenience, not a requirement. Any MCP client can connect by spawning the exact command the installer registers:
 
@@ -137,7 +141,7 @@ No flags or environment are needed: `memory-vault stdio` resolves the store on i
 
 What `install` adds on top of a bare MCP connection: the memory ritual written into each harness's rules file (`CLAUDE.md`, `AGENTS.md`, …), which makes agents check and save memories much more reliably, and a record in `~/.memory-vault-connections.json` so `status` can report the wiring. If you started with a manual connection, running `npx -y memory-vault install --global` later layers those on without changing the MCP entry.
 
-## Set up on another computer
+### Set up on another computer
 
 On the hosted tier there is nothing to set up: add the connector on the new machine and sign in — your memories are already there. The rest of this section is for the local tier.
 
@@ -163,7 +167,7 @@ npx -y memory-vault install --global
 
 A plain synced folder (Dropbox, iCloud, Syncthing) works the same way — the server never assumes git; it just reads and writes Markdown.
 
-## Import native memory, project to memoryless harnesses
+### Import native memory, project to memoryless harnesses
 
 ```sh
 npx -y memory-vault import     # Claude Code auto-memory + Codex sqlite → candidates/
@@ -172,7 +176,7 @@ npx -y memory-vault project    # regenerate the read-only shared/ block in dsh's
 
 `import` copies each harness's native memory into the matching space's `candidates/` directory — searchable and labeled `[candidate]`, excluded from the index, never written into canonical memory automatically. The Codex reader is read-only and refuses unknown database schema versions. Both commands print a capability report of what they can and cannot move, and take `--dry-run` / `--json`.
 
-### Supported harnesses
+#### Supported harnesses
 
 | Harness | Files configured |
 |---|---|
@@ -190,7 +194,7 @@ For DSH, start a session with the generated patch:
 dsh --patch ./dsh-cordis.patch.yml --profile headless "your task"
 ```
 
-## Run the server directly
+### Run the server directly
 
 ```sh
 MEMORY_DIR=~/.memory-vault npx memory-vault
@@ -205,7 +209,7 @@ The server listens on `127.0.0.1:8787` by default.
 
 From a cloned repository, `npm start` runs the same server.
 
-### MCP endpoints
+#### MCP endpoints
 
 ```text
 POST /mcp/<project>  project memory plus shared memory
@@ -239,6 +243,6 @@ The current release is a Markdown store (local folder, or your own GitHub reposi
 
 ## Package
 
-- npm: [`memory-vault`](https://www.npmjs.com/package/memory-vault)
+- npm: [`memory-vault`](https://www.npmjs.com/package/memory-vault) (`memroam` on npm is a deprecated alias)
 - MCP registry: `io.github.apurv101/memory-vault`
 - License: MIT

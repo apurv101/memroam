@@ -6,7 +6,7 @@
 // space name, written by stdio auto-detection so renames and basename
 // collisions stay stable), global (what install --global wired).
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { atomicWrite, exists } from "./store.mjs";
@@ -19,18 +19,23 @@ export const projectSlug = (name) =>
     .slice(0, 64);
 
 export const CONNECTIONS_PATH = join(homedir(), ".memory-vault-connections.json");
+// memroam-era installs wrote this path; readRegistry falls back to it,
+// and the next write migrates the registry to the new name and removes it.
+const LEGACY_CONNECTIONS_PATH = join(homedir(), ".memroam-connections.json");
 
 export async function readRegistry() {
-  try {
-    const parsed = JSON.parse(await readFile(CONNECTIONS_PATH, "utf8"));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
+  for (const path of [CONNECTIONS_PATH, LEGACY_CONNECTIONS_PATH]) {
+    try {
+      const parsed = JSON.parse(await readFile(path, "utf8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed;
+    } catch {}
   }
+  return {};
 }
 
 export async function writeRegistry(registry) {
   await atomicWrite(CONNECTIONS_PATH, JSON.stringify(registry, null, 2) + "\n");
+  await rm(LEGACY_CONNECTIONS_PATH, { force: true }).catch(() => {});
 }
 
 export async function readConnections() {

@@ -27,12 +27,12 @@ export async function status() {
   console.log(`\n  this repo (${cwd}):`);
   for (const h of HARNESSES) {
     const raw = await readFile(join(cwd, h.where), "utf8").catch(() => null);
-    const state = raw === null ? "not present" : /vault/i.test(raw) ? "wired" : "present, no vault entry";
+    const state = raw === null ? "not present" : /memroam|vault/i.test(raw) ? "wired" : "present, no vault entry";
     console.log(`  ${(h.key + " ").padEnd(9)}${h.where} ${state}`);
   }
   const agents = await readFile(join(cwd, "AGENTS.md"), "utf8").catch(() => null);
   console.log(
-    `  rules    AGENTS.md ${agents === null ? "not present" : /vault/i.test(agents) ? "has the memory section" : "no memory section"}`,
+    `  rules    AGENTS.md ${agents === null ? "not present" : /memroam|vault/i.test(agents) ? "has the memory section" : "no memory section"}`,
   );
 
   const registry = await readRegistry();
@@ -42,26 +42,27 @@ export async function status() {
     const raw = await readFile(path, "utf8").catch(() => null);
     if (raw === null) return "not present";
     try {
-      return JSON.parse(raw).mcpServers?.vault ? "wired" : "present, no vault entry";
+      const servers = JSON.parse(raw).mcpServers;
+      return servers?.vault ? "wired" : servers?.memroam ? "wired (legacy name — rerun install)" : "present, no vault entry";
     } catch {
       return raw.trim() === "" ? "present, no vault entry" : "not valid JSON";
     }
   };
   const rulesWired = async (path) => {
     const raw = await readFile(path, "utf8").catch(() => null);
-    return raw === null ? "not present" : /vault/i.test(raw) ? "has the memory section" : "no memory section";
+    return raw === null ? "not present" : /memroam|vault/i.test(raw) ? "has the memory section" : "no memory section";
   };
   console.log(`  claude   ~/.claude.json ${await mcpWired(join(home, ".claude.json"))} · CLAUDE.md ${await rulesWired(join(home, ".claude", "CLAUDE.md"))}`);
   console.log(`  cursor   ~/.cursor/mcp.json ${await mcpWired(join(home, ".cursor", "mcp.json"))}`);
   const codexToml = await readFile(join(home, ".codex", "config.toml"), "utf8").catch(() => null);
   console.log(
-    `  codex    ~/.codex/config.toml ${codexToml === null ? "not present" : codexToml.includes("[mcp_servers.vault]") ? "wired" : "present, no vault entry"} · AGENTS.md ${await rulesWired(join(home, ".codex", "AGENTS.md"))}`,
+    `  codex    ~/.codex/config.toml ${codexToml === null ? "not present" : codexToml.includes("[mcp_servers.vault]") ? "wired" : codexToml.includes("[mcp_servers.memroam]") ? "wired (legacy name — rerun install)" : "present, no vault entry"} · AGENTS.md ${await rulesWired(join(home, ".codex", "AGENTS.md"))}`,
   );
   const profiles = await dshProfiles();
   const dshWired = [];
   for (const p of profiles) {
     const patch = await readFile(join(home, ".dsh", "profiles", p, "cordis.patch.yml"), "utf8").catch(() => null);
-    if (patch !== null && patch.includes("id: mcp-vault")) dshWired.push(p);
+    if (patch !== null && /id: mcp-(?:vault|memroam)\b/.test(patch)) dshWired.push(p);
   }
   console.log(
     `  dsh      profiles wired: ${dshWired.length}/${profiles.length}${profiles.length ? ` (${profiles.map((p) => (dshWired.includes(p) ? p : `${p}✗`)).join(", ")})` : ""} · AGENTS.md ${await rulesWired(join(home, ".dsh", "AGENTS.md"))}`,
@@ -70,7 +71,8 @@ export async function status() {
   let openState = "not present";
   if (openConfig !== null) {
     try {
-      openState = JSON.parse(openConfig).mcp?.vault ? "wired" : "present, no vault entry";
+      const mcp = JSON.parse(openConfig).mcp;
+      openState = mcp?.vault ? "wired" : mcp?.memroam ? "wired (legacy name — rerun install)" : "present, no vault entry";
     } catch {
       openState = "not valid JSON";
     }
@@ -81,8 +83,19 @@ export async function status() {
   console.log(
     `  gemini   ~/.gemini/settings.json ${await mcpWired(join(home, ".gemini", "settings.json"))} · GEMINI.md ${await rulesWired(join(home, ".gemini", "GEMINI.md"))}`,
   );
+  // Antigravity rule file: new installs write rules/memory-vault.md; installs
+  // from the memroam era wrote rules/memroam.md — report whichever exists.
+  const agRules = join(home, ".gemini", "config", "rules");
+  const agNew = await rulesWired(join(agRules, "memory-vault.md"));
+  const agOld = await rulesWired(join(agRules, "memroam.md"));
+  const agRulesState =
+    agNew !== "not present"
+      ? `rules/memory-vault.md ${agNew}`
+      : agOld !== "not present"
+        ? `rules/memroam.md ${agOld} (legacy name)`
+        : "rules/memory-vault.md not present";
   console.log(
-    `  antigravity ~/.gemini/config/mcp_config.json ${await mcpWired(join(home, ".gemini", "config", "mcp_config.json"))} · rules/memory-vault.md ${await rulesWired(join(home, ".gemini", "config", "rules", "memory-vault.md"))}`,
+    `  antigravity ~/.gemini/config/mcp_config.json ${await mcpWired(join(home, ".gemini", "config", "mcp_config.json"))} · ${agRulesState}`,
   );
   if (registry.store) console.log(`  store    ${registry.store}`);
   const spaces = Object.entries(registry.spaces ?? {});

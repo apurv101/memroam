@@ -2,29 +2,35 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.apurv101/memory-vault",
   "title": "Memory Vault",
-  "description": "Claude-style memory over a local folder via MCP — per-project spaces plus a shared org layer.",
-  "version": "0.3.1",
+  "description": "Portable AI memory shared across models and harnesses - plain markdown you own.",
+  "version": "0.5.0",
+  "websiteUrl": "https://memoryvault.click",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://memoryvault.click/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "memory-vault",
-      "version": "0.3.1",
+      "version": "0.5.0",
       "runtimeHint": "npx",
       "transport": {
-        "type": "streamable-http",
-        "url": "http://localhost:8787/mcp"
+        "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "MEMORY_DIR",
-          "description": "Directory the vault stores memory in (defaults to ./memory)",
+          "description": "Directory the vault stores memory in (defaults to ~/.memory-vault)",
           "isRequired": false,
           "format": "string"
         },
         {
           "name": "VAULT_PORT",
-          "description": "Port the vault server listens on (defaults to 8787)",
+          "description": "Port the local server listens on (defaults to 8787)",
           "isRequired": false,
           "format": "number"
         }

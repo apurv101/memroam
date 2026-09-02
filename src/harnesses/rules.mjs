@@ -4,7 +4,7 @@
 
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MARKED_SECTION, MEMORY_SECTION } from "../instructions.mjs";
+import { MARKED_SECTION, MARKED_SECTION_RE, MEMORY_SECTION } from "../instructions.mjs";
 
 export async function installRules({ cwd, project, dryRun }) {
   const lines = [];
@@ -13,7 +13,7 @@ export async function installRules({ cwd, project, dryRun }) {
   if (agents === null) {
     if (!dryRun) await writeFile(agentsPath, `# ${project}\n\n${MARKED_SECTION}`);
     lines.push("rules    AGENTS.md created with the memory section");
-  } else if (!/vault/i.test(agents)) {
+  } else if (!/memroam|vault/i.test(agents)) {
     if (!dryRun) await writeFile(agentsPath, `${agents.trimEnd()}\n\n${MARKED_SECTION}`);
     lines.push("rules    AGENTS.md memory section appended");
   } else {
@@ -25,7 +25,7 @@ export async function installRules({ cwd, project, dryRun }) {
   if (claudeMd === null) {
     if (!dryRun) await writeFile(claudeMdPath, "@AGENTS.md\n");
     lines.push("rules    CLAUDE.md created (imports @AGENTS.md)");
-  } else if (!/vault/i.test(claudeMd) && !claudeMd.includes("@AGENTS.md")) {
+  } else if (!/memroam|vault/i.test(claudeMd) && !claudeMd.includes("@AGENTS.md")) {
     if (!dryRun) await writeFile(claudeMdPath, `${claudeMd.trimEnd()}\n\n@AGENTS.md\n`);
     lines.push("rules    CLAUDE.md @AGENTS.md import appended");
   } else {
@@ -45,14 +45,14 @@ export async function uninstallRules({ cwd, project, dryRun }) {
   } else {
     // Marker-delimited sections first (written by install going forward),
     // exact text of the current section as fallback for older installs.
-    const marked = /(?:^|\n)<!-- memory-vault:begin -->\n[\s\S]*?<!-- memory-vault:end -->\n?/;
+    const marked = MARKED_SECTION_RE;
     let cleaned = null;
     if (marked.test(agents)) cleaned = agents.replace(marked, "\n");
     else if (agents.includes(MEMORY_SECTION)) cleaned = agents.replace(MEMORY_SECTION, "");
     if (cleaned === null) {
       lines.push(
-        /vault/i.test(agents)
-          ? "rules    AGENTS.md mentions the vault but not the standard section — edit by hand"
+        /memroam|vault/i.test(agents)
+          ? "rules    AGENTS.md mentions vault but not the standard section — edit by hand"
           : "rules    AGENTS.md no memory section",
       );
     } else {
@@ -79,8 +79,8 @@ export async function uninstallRules({ cwd, project, dryRun }) {
   } else if ((agentsDeleted || sectionRemoved) && /\n@AGENTS\.md\s*$/.test(claudeMd)) {
     if (!dryRun) await writeFile(claudeMdPath, claudeMd.replace(/\n+@AGENTS\.md\s*$/, "\n"));
     lines.push("rules    CLAUDE.md @AGENTS.md import removed");
-  } else if (/vault/i.test(claudeMd)) {
-    lines.push("rules    CLAUDE.md mentions the vault — review by hand");
+  } else if (/memroam|vault/i.test(claudeMd)) {
+    lines.push("rules    CLAUDE.md mentions vault — review by hand");
   } else {
     lines.push("rules    CLAUDE.md unchanged");
   }

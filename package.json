@@ -1,8 +1,8 @@
 {
   "name": "memory-vault",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "mcpName": "io.github.apurv101/memory-vault",
-  "description": "Claude-style memory over a local folder, served via MCP — per-project spaces plus a shared org layer. Harness-neutral, customer-owned.",
+  "description": "Portable AI memory over a local folder or hosted vault, served via MCP \u2014 one memory shared across models and harnesses (Claude, ChatGPT, Codex, Cursor). Per-project spaces plus a shared org layer, stored as plain markdown you own.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -18,7 +18,14 @@
     "memory",
     "claude",
     "agent-memory",
-    "model-context-protocol"
+    "model-context-protocol",
+    "chatgpt",
+    "codex",
+    "cursor",
+    "portable-memory",
+    "cross-harness",
+    "ai-memory",
+    "claude-code"
   ],
   "engines": {
     "node": ">=18"

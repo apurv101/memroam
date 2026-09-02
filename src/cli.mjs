@@ -6,9 +6,9 @@
 import { mkdir } from "node:fs/promises";
 import { openSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
-import { MEMORY_DIR, PORT, setMemoryDir } from "./store.mjs";
+import { MEMORY_DIR, PORT, defaultStoreDir, setMemoryDir } from "./store.mjs";
 import { server, stdioServe } from "./transports.mjs";
 import { HARNESSES, installRules, uninstallRules } from "./harnesses/index.mjs";
 import { runAdapters } from "./adapters/index.mjs";
@@ -83,13 +83,15 @@ async function install(argv) {
   const lines = [];
 
   // 1. The server. If it's already up it keeps its own MEMORY_DIR; only a
-  // fresh start needs a store location.
+  // fresh start needs a store location — env wins, then the store recorded by
+  // a previous install (same fallback chain as install --global).
+  const registryStore = (await readRegistry()).store;
   if (await serverUp()) {
     lines.push(`server   already running on port ${PORT}`);
   } else if (dryRun) {
-    lines.push(`server   down — would start it (store: ${process.env.MEMORY_DIR ?? join(homedir(), ".memory-vault")})`);
+    lines.push(`server   down — would start it (store: ${process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir()})`);
   } else {
-    const storeDir = resolve(process.env.MEMORY_DIR ?? join(homedir(), ".memory-vault"));
+    const storeDir = resolve(process.env.MEMORY_DIR ?? registryStore ?? defaultStoreDir());
     const log = openSync(join(tmpdir(), "memory-vault.log"), "a");
     spawn(process.execPath, [SELF], {
       detached: true,
@@ -164,7 +166,7 @@ async function uninstall(argv) {
   console.log(`memory-vault uninstall — project "${project}"${dryRun ? " (dry run)" : ""}\n`);
   for (const l of lines) console.log(`  ${l}`);
   console.log(
-    "\nYour memories are untouched — the store stays in the vault directory (default ~/.memory-vault).\n" +
+    `\nYour memories are untouched — the store stays in the vault directory (default ${defaultStoreDir()}).\n` +
       "The server keeps running for other projects; restart your agent session to drop the vault tools.",
   );
 }
@@ -194,7 +196,7 @@ async function installGlobal(argv) {
     else throw new Error(`unknown flag: ${argv[i]} (usage: memory-vault install --global [--store <dir>] [--dry-run])`);
   }
   const registry = await readRegistry();
-  const store = resolve(storeFlag ?? process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  const store = resolve(storeFlag ?? process.env.MEMORY_DIR ?? registry.store ?? defaultStoreDir());
   const { command, args } = stdioLaunch();
   const ctx = { store, command, args, dryRun };
   const lines = [`store    ${store}`, `runs     ${command} ${args.join(" ")}`];
@@ -242,7 +244,7 @@ async function adapterCommand(kind, argv) {
     else throw new Error(`unknown flag: ${a} (usage: memory-vault ${kind === "import" ? "import" : "project"} [--dry-run] [--json])`);
   }
   const registry = await readRegistry();
-  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? join(homedir(), ".memory-vault"));
+  setMemoryDir(process.env.MEMORY_DIR ?? registry.store ?? defaultStoreDir());
   const reports = await runAdapters(kind, { dryRun });
   if (json) {
     console.log(JSON.stringify(reports, null, 2));
@@ -283,19 +285,19 @@ const USAGE = `memory-vault — Claude-style memory over a local folder, via MCP
   memory-vault uninstall --global
                             undo install --global; memories are never touched
                             [--dry-run]
-  memory-vault stdio        MCP over stdin/stdout (what the global
+  memory-vault stdio             MCP over stdin/stdout (what the global
                             registrations run)
-  memory-vault [serve]      serve the vault over HTTP (MEMORY_DIR, VAULT_PORT)
-  memory-vault install      wire only the current repo (team-shared configs,
+  memory-vault [serve]           serve the vault over HTTP (MEMORY_DIR, VAULT_PORT)
+  memory-vault install           wire only the current repo (team-shared configs,
                             custom space name)          (alias: connect)
                             [--project <name>] [--harness <keys>] [--yes] [--dry-run]
-  memory-vault uninstall    undo install for this repo  (alias: disconnect)
+  memory-vault uninstall         undo install for this repo  (alias: disconnect)
                             [--project <name>] [--dry-run]
-  memory-vault import       import native harness memory (Claude auto-memory,
+  memory-vault import            import native harness memory (Claude auto-memory,
                             Codex sqlite) into candidates/ [--dry-run] [--json]
-  memory-vault project      regenerate read-only projections for harnesses
+  memory-vault project           regenerate read-only projections for harnesses
                             without native memory (dsh)   [--dry-run] [--json]
-  memory-vault status       show server state, this repo's wiring, the global
+  memory-vault status            show server state, this repo's wiring, the global
                             wiring, and every repo recorded by install`;
 
 export async function runCli(argv, self) {
@@ -333,7 +335,8 @@ export async function runCli(argv, self) {
     await status();
   } else if (cmd === undefined || cmd === "serve") {
     await mkdir(MEMORY_DIR, { recursive: true });
-    server.listen(PORT, "127.0.0.1", () => {
+    // Loopback-only by default; VAULT_HOST=0.0.0.0 for containerized runs.
+    server.listen(PORT, process.env.VAULT_HOST ?? "127.0.0.1", () => {
       console.log(`memory-vault serving ${MEMORY_DIR}`);
       console.log(`MCP endpoints: http://localhost:${PORT}/mcp/<project> (scoped), http://localhost:${PORT}/mcp (whole vault)`);
     });

@@ -16,6 +16,18 @@ export async function dshProfiles() {
   return profiles.sort();
 }
 
+// Matches our entry id under either name — memroam-era installs wrote
+// `id: mcp-memroam`.
+const OUR_ID = /id: mcp-(?:vault|memroam)\b/;
+
+// Remove our entry from a Cordis patch: the insert-wrapped shape (ours only
+// ever holds the vault entry) and the legacy bare-id shape from older
+// installs, under either id.
+const stripEntries = (patch) =>
+  patch
+    .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (OUR_ID.test(block) ? "\n" : block))
+    .replace(/(?:^|\n)- id: mcp-(?:vault|memroam)\n(?:[ \t].*(?:\n|$))*/g, "\n");
+
 export default {
   key: "dsh",
   title: "DeepSeek Harness",
@@ -37,6 +49,13 @@ export default {
     if (patch !== null && patch.includes("id: mcp-vault")) {
       return [`dsh      dsh-cordis.patch.yml already has a vault entry with a different url — update it by hand to ${url}`];
     }
+    if (patch !== null && patch.includes("id: mcp-memroam")) {
+      // Legacy entry from the memroam era — replace it with the renamed one.
+      const base = stripEntries(patch).trim();
+      const onlyComments = base.split("\n").every((l) => l.trim() === "" || l.trim().startsWith("#"));
+      if (!dryRun) await writeFile(patchPath, onlyComments ? patchContent : `${base}\n\n${patchEntry}`);
+      return ["dsh      dsh-cordis.patch.yml updated (renamed memroam → vault) — run: dsh --patch ./dsh-cordis.patch.yml"];
+    }
     if (patch !== null) {
       if (!dryRun) await writeFile(patchPath, `${patch.trimEnd()}\n\n${patchEntry}`);
       return ["dsh      dsh-cordis.patch.yml updated — run: dsh --patch ./dsh-cordis.patch.yml"];
@@ -48,10 +67,8 @@ export default {
     const patchPath = join(cwd, "dsh-cordis.patch.yml");
     const patch = await readFile(patchPath, "utf8").catch(() => null);
     if (patch === null) return ["dsh      dsh-cordis.patch.yml not present"];
-    if (!patch.includes("id: mcp-vault")) return ["dsh      dsh-cordis.patch.yml no vault entry"];
-    const cleaned = patch
-      .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
-      .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
+    if (!OUR_ID.test(patch)) return ["dsh      dsh-cordis.patch.yml no vault entry"];
+    const cleaned = stripEntries(patch);
     const onlyComments = cleaned.split("\n").every((l) => l.trim() === "" || l.trim().startsWith("#"));
     if (onlyComments) {
       if (!dryRun) await rm(patchPath);
@@ -81,6 +98,10 @@ export default {
       const patch = await readFile(patchPath, "utf8").catch(() => null);
       if (patch !== null && patch.includes("id: mcp-vault")) {
         lines.push(`dsh      profiles/${profile} already has a vault entry — left as is`);
+      } else if (patch !== null && patch.includes("id: mcp-memroam")) {
+        const base = stripEntries(patch).trim();
+        if (!dryRun) await writeFile(patchPath, `${base ? base + "\n\n" : ""}${entry}`);
+        lines.push(`dsh      profiles/${profile}/cordis.patch.yml updated (renamed memroam → vault, stdio mount)`);
       } else {
         if (!dryRun) await writeFile(patchPath, `${patch === null ? "" : patch.trimEnd() + "\n\n"}${entry}`);
         lines.push(`dsh      profiles/${profile}/cordis.patch.yml ${patch === null ? "created" : "updated"} (stdio mount)`);
@@ -94,15 +115,11 @@ export default {
     for (const profile of await dshProfiles()) {
       const patchPath = join(homedir(), ".dsh", "profiles", profile, "cordis.patch.yml");
       const patch = await readFile(patchPath, "utf8").catch(() => null);
-      if (patch === null || !patch.includes("id: mcp-vault")) {
+      if (patch === null || !OUR_ID.test(patch)) {
         lines.push(`dsh      profiles/${profile} no vault entry`);
         continue;
       }
-      // Remove the insert-wrapped shape (ours only ever holds the vault
-      // entry) and the legacy bare-id shape from older installs.
-      const cleaned = patch
-        .replace(/(?:^|\n)- insert:\n(?:[ \t].*(?:\n|$))*/g, (block) => (block.includes("id: mcp-vault") ? "\n" : block))
-        .replace(/(?:^|\n)- id: mcp-vault\n(?:[ \t].*(?:\n|$))*/g, "\n");
+      const cleaned = stripEntries(patch);
       if (!dryRun) await writeFile(patchPath, cleaned.trimEnd() + "\n");
       lines.push(`dsh      profiles/${profile} vault entry removed`);
     }

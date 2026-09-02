@@ -29,7 +29,10 @@ export default {
     const entry = { command, args, env: { MEMORY_DIR: store } };
     const status = await mergeMcpJson(join(homedir(), ".cursor", "mcp.json"), entry, dryRun);
     const skillPath = join(homedir(), ".cursor", "skills", "memory-vault", "SKILL.md");
-    const skillExists = await exists(skillPath);
+    // Either skill directory counts as installed — installs from the
+    // memroam era wrote ~/.cursor/skills/memroam.
+    const skillExists =
+      (await exists(skillPath)) || (await exists(join(homedir(), ".cursor", "skills", "memroam", "SKILL.md")));
     if (!dryRun && !skillExists) {
       await mkdir(dirname(skillPath), { recursive: true });
       await writeFile(skillPath, CURSOR_RITUAL_SKILL);
@@ -43,13 +46,16 @@ export default {
   async globalUninstall({ dryRun }) {
     if (!(await exists(join(homedir(), ".cursor")))) return ["cursor   ~/.cursor not found — skipped"];
     const lines = [`cursor   ~/.cursor/mcp.json ${await removeMcpJson(join(homedir(), ".cursor", "mcp.json"), dryRun)}`];
-    const skillDir = join(homedir(), ".cursor", "skills", "memory-vault");
-    if (await exists(skillDir)) {
+    // Remove the skill under either name — memroam-era installs used the old one.
+    let removed = false;
+    for (const name of ["memory-vault", "memroam"]) {
+      const skillDir = join(homedir(), ".cursor", "skills", name);
+      if (!(await exists(skillDir))) continue;
       if (!dryRun) await rm(skillDir, { recursive: true });
-      lines.push("cursor   ~/.cursor/skills/memory-vault removed");
-    } else {
-      lines.push("cursor   ~/.cursor/skills/memory-vault not present");
+      lines.push(`cursor   ~/.cursor/skills/${name} removed`);
+      removed = true;
     }
+    if (!removed) lines.push("cursor   ~/.cursor/skills/memory-vault not present");
     return lines;
   },
 };

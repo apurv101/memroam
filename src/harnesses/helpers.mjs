@@ -4,14 +4,14 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { GLOBAL_MARKED_SECTION } from "../instructions.mjs";
+import { GLOBAL_MARKED_SECTION, MARKED_SECTION_RE } from "../instructions.mjs";
 
 // Append the global ritual to one harness's user-global rules file. The file's
 // parent directory must already exist (the caller detects the harness first);
-// a file that already mentions the vault is left alone.
+// a file that already mentions the vault (or memroam, its old name) is left alone.
 export async function upsertGlobalRules(path, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
-  if (raw !== null && /vault/i.test(raw)) return "unchanged (already mentions the vault)";
+  if (raw !== null && /memroam|vault/i.test(raw)) return "unchanged (already mentions vault)";
   if (!dryRun) await writeFile(path, raw === null ? GLOBAL_MARKED_SECTION : `${raw.trimEnd()}\n\n${GLOBAL_MARKED_SECTION}`);
   return raw === null ? "created with the memory section" : "memory section appended";
 }
@@ -19,9 +19,9 @@ export async function upsertGlobalRules(path, dryRun) {
 export async function removeGlobalRules(path, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   if (raw === null) return "not present";
-  const marked = /(?:^|\n)<!-- memory-vault:begin -->\n[\s\S]*?<!-- memory-vault:end -->\n?/;
+  const marked = MARKED_SECTION_RE;
   if (!marked.test(raw)) {
-    return /vault/i.test(raw) ? "mentions the vault but not the managed section — edit by hand" : "no memory section";
+    return /memroam|vault/i.test(raw) ? "mentions vault but not the managed section — edit by hand" : "no memory section";
   }
   const cleaned = raw.replace(marked, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (cleaned === "") {
@@ -33,7 +33,9 @@ export async function removeGlobalRules(path, dryRun) {
 }
 
 // Merge one entry into a { mcpServers: { ... } } JSON config, preserving the
-// rest of the file. Returns "created" | "updated" | "unchanged".
+// rest of the file. Returns "created" | "updated" | "unchanged". Installs from
+// the memroam era registered the server as "memroam" — that key is dropped
+// on merge so an upgrade doesn't leave two registrations.
 export async function mergeMcpJson(path, entry, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   let config = {};
@@ -47,9 +49,10 @@ export async function mergeMcpJson(path, entry, dryRun) {
     }
   }
   config.mcpServers ??= {};
-  if (JSON.stringify(config.mcpServers.vault) === JSON.stringify(entry)) return "unchanged";
+  if (JSON.stringify(config.mcpServers.vault) === JSON.stringify(entry) && !config.mcpServers.memroam) return "unchanged";
   const status = raw === null ? "created" : "updated";
   config.mcpServers.vault = entry;
+  delete config.mcpServers.memroam;
   if (!dryRun) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, JSON.stringify(config, null, 2) + "\n");
@@ -57,8 +60,8 @@ export async function mergeMcpJson(path, entry, dryRun) {
   return status;
 }
 
-// Reverse of mergeMcpJson: drop the vault entry, delete the file if that was
-// all it held. Returns a status string for the report.
+// Reverse of mergeMcpJson: drop the vault entry (and any legacy "memroam"
+// one), delete the file if that was all it held. Returns a status string.
 export async function removeMcpJson(path, dryRun) {
   const raw = await readFile(path, "utf8").catch(() => null);
   if (raw === null) return "not present";
@@ -69,8 +72,9 @@ export async function removeMcpJson(path, dryRun) {
   } catch {
     return "not valid JSON — remove the vault entry by hand";
   }
-  if (!config.mcpServers?.vault) return "no vault entry";
+  if (!config.mcpServers?.vault && !config.mcpServers?.memroam) return "no vault entry";
   delete config.mcpServers.vault;
+  delete config.mcpServers.memroam;
   const empty = Object.keys(config).length === 1 && Object.keys(config.mcpServers).length === 0;
   if (!dryRun) {
     if (empty) await rm(path);
@@ -92,9 +96,10 @@ export async function mergeOpencodeMcp(path, entry, dryRun) {
     }
   }
   config.mcp ??= {};
-  if (JSON.stringify(config.mcp.vault) === JSON.stringify(entry)) return "unchanged";
+  if (JSON.stringify(config.mcp.vault) === JSON.stringify(entry) && !config.mcp.memroam) return "unchanged";
   const status = raw === null ? "created" : "updated";
   config.mcp.vault = entry;
+  delete config.mcp.memroam;
   if (!dryRun) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, JSON.stringify(config, null, 2) + "\n");
@@ -111,8 +116,9 @@ export async function removeOpencodeMcp(path, dryRun) {
   } catch {
     return "not valid JSON — remove the vault entry by hand";
   }
-  if (!config.mcp?.vault) return "no vault entry";
+  if (!config.mcp?.vault && !config.mcp?.memroam) return "no vault entry";
   delete config.mcp.vault;
+  delete config.mcp.memroam;
   const empty = Object.keys(config).every((k) => k === "mcp" || k === "$schema") && Object.keys(config.mcp).length === 0;
   if (!dryRun) {
     if (empty) await rm(path);
