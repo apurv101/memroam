@@ -4,7 +4,31 @@ Your coding agents don't share a memory. Memory Vault gives them one — teach C
 
 ![Claude Code and Codex sharing one memory](demo.gif)
 
-Memory Vault stores facts as ordinary Markdown files. Each project gets an isolated memory space, while `shared/` holds facts that apply across projects. The files stay on your machine and remain usable if you change models or agent harnesses.
+Memory Vault stores facts as ordinary Markdown files. Each project gets an isolated memory space, while `shared/` holds facts that apply across projects. The files live in a private GitHub repository you own (hosted tier) or on your machine (local tier) and remain usable if you change models or agent harnesses.
+
+## Quick start
+
+**Hosted tier (recommended)** — nothing to install. Add the remote MCP endpoint to any client:
+
+```sh
+claude mcp add --transport http --scope user vault https://memoryvault.click/mcp
+```
+
+or add `https://memoryvault.click/mcp` as a custom connector in claude.ai, ChatGPT, Codex, or any Streamable-HTTP MCP client. On first connect you sign in with GitHub and install the memory-vault GitHub App on **exactly one private repository you own** — your memories live there as plain Markdown commits. Another computer or harness just adds the same connector: same memories, nothing to sync.
+
+**Local tier** — run the server on your own machine instead:
+
+```sh
+npx -y memory-vault install --global   # wire every detected harness on this machine
+```
+
+Restart your agent sessions, approve the `vault` MCP server if prompted, and verify the wiring:
+
+```sh
+npx -y memory-vault status
+```
+
+Memories accumulate in `~/.memory-vault` as plain Markdown — see [Set up on another computer](#set-up-on-another-computer) to carry them to a second machine with a GitHub repo.
 
 ## How it works
 
@@ -91,6 +115,54 @@ npx -y memory-vault status
 
 Shows whether the server is up and which store it serves, how the current repository is wired per harness, and every repository recorded by `install` (kept in `~/.memory-vault-connections.json`). If the server is up and the repo is wired but your agent session has no vault tools, the remaining cause is session attachment — `status` prints how to fix it.
 
+## Connect without the installer
+
+`install` is a convenience, not a requirement. Any MCP client can connect by spawning the exact command the installer registers:
+
+```sh
+claude mcp add --scope user vault -- npx -y memory-vault stdio
+```
+
+or, in any client's JSON MCP config:
+
+```json
+{
+  "mcpServers": {
+    "vault": { "command": "npx", "args": ["-y", "memory-vault", "stdio"] }
+  }
+}
+```
+
+No flags or environment are needed: `memory-vault stdio` resolves the store on its own (`MEMORY_DIR` env var, else the store recorded by a previous install, else `~/.memory-vault`), detects the project space from the session's working directory, and carries its own usage instructions over MCP. A manual connection and an installed one therefore talk to the same vault and behave the same in-session.
+
+What `install` adds on top of a bare MCP connection: the memory ritual written into each harness's rules file (`CLAUDE.md`, `AGENTS.md`, …), which makes agents check and save memories much more reliably, and a record in `~/.memory-vault-connections.json` so `status` can report the wiring. If you started with a manual connection, running `npx -y memory-vault install --global` later layers those on without changing the MCP entry.
+
+## Set up on another computer
+
+On the hosted tier there is nothing to set up: add the connector on the new machine and sign in — your memories are already there. The rest of this section is for the local tier.
+
+The vault is nothing but a directory of Markdown files, so moving or sharing it is a file-copy problem, not a migration. The natural way to keep two machines in sync is to make the store a git repository hosted on GitHub.
+
+On the machine that already has memories:
+
+```sh
+cd ~/.memory-vault
+git init && git add -A && git commit -m "memory vault"
+git remote add origin git@github.com:<you>/memory-vault-store.git   # a private repo
+git push -u origin main
+```
+
+On the new computer, clone the store first, then run the same global install against it:
+
+```sh
+git clone git@github.com:<you>/memory-vault-store.git ~/.memory-vault
+npx -y memory-vault install --global
+```
+
+`install --global` defaults to `~/.memory-vault`, so cloning to that path needs no extra flags; a store kept elsewhere (a synced folder, a different clone path) is selected with `--store <dir>`. Restart your sessions and both machines read and write the same memories — `git pull` / `git push` when you switch computers, and because every memory is a small self-contained file, merges rarely conflict. If a generated `MEMORY.md` index does conflict, resolve it either way: it is a projection of the files' frontmatter, never read as source of truth, and the server rewrites it on the next change in that space.
+
+A plain synced folder (Dropbox, iCloud, Syncthing) works the same way — the server never assumes git; it just reads and writes Markdown.
+
 ## Import native memory, project to memoryless harnesses
 
 ```sh
@@ -163,7 +235,7 @@ The server stamps an `id:` and regenerates the space's `MEMORY.md` index line fr
 
 ## Current scope
 
-The current release is a local Markdown store, an MCP interface with keyword search, a cross-harness setup command, and one-shot import/projection adapters. There is no automatic extraction, semantic search, automated deduplication, authentication, or remote deployment.
+The current release is a Markdown store (local folder, or your own GitHub repository on the hosted tier), an MCP interface with keyword search, OAuth 2.1 on the hosted tier, a cross-harness setup command, and one-shot import/projection adapters. There is no automatic extraction, semantic search, or automated deduplication.
 
 ## Package
 
