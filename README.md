@@ -4,7 +4,24 @@ Your memory shouldn't be locked to one model. Memory Vault gives every AI agent 
 
 ![Claude Code and Codex sharing one memory](demo.gif)
 
-Memory Vault stores facts as ordinary Markdown files. Each project gets an isolated memory space, while `shared/` holds facts that apply across projects. The files stay on your machine (or in your own GitHub repository with the hosted tier) and remain fully usable if you change models or agent harnesses — that's the point.
+Memory Vault stores facts as ordinary Markdown files. Each project gets an isolated memory space, while `shared/` holds facts that apply across projects. The files live in your own private GitHub repository (hosted tier) or on your machine (local tier) and remain fully usable if you change models or agent harnesses — that's the point.
+
+## Hosted tier (recommended)
+
+The hosted tier is the server run for you: a remote MCP endpoint secured with OAuth 2.1, storing your memories as commits in a private GitHub repository **you own**. There is nothing to install — connect from any remote-MCP client:
+
+```text
+https://memoryvault.click/mcp
+```
+
+- **Claude Code**: `claude mcp add --transport http --scope user vault https://memoryvault.click/mcp`
+- **Claude (claude.ai)**: Settings → Connectors → add the URL above as a custom connector.
+- **ChatGPT**: add it as a custom connector (the server implements the OpenAI search/fetch contract).
+- **Codex or any other Streamable-HTTP MCP client**: point it at the same URL.
+
+The first connection walks you through setup: sign in with GitHub, then install the memory-vault GitHub App on **exactly one private repository** — that repo becomes your vault (create an empty private repo for it first if you don't have one). The service keeps no copy of your memories and no standing credentials: repo access uses short-lived installation tokens minted per request, and uninstalling the App from the repository revokes everything.
+
+Setting up another computer — or another harness on the same computer — is just adding the connector again and signing in. The same memories are there immediately; there is no store to copy and nothing to sync. And because every memory is a plain markdown file in your repo, you can clone it, grep it, edit it by hand, or take it anywhere. Losing access to the hosted tier never means losing your memory.
 
 ## How it works
 
@@ -25,14 +42,16 @@ memory/
 
 A project connection reads and writes its own space by default, but the whole vault stays visible — other spaces are addressable by path, and the root listing shows every space. Scope is a routing default, not a wall. An unscoped connection starts at the vault root for cross-project maintenance.
 
-## Requirements
+## Local tier
+
+Everything below runs the same server on your own machine, storing memories in a local folder (default `~/.memory-vault`). Requirements — hosted tier needs none of this:
 
 - Node.js 18 or newer
 - An MCP client that supports stdio (global install) or Streamable HTTP (per-repo install)
 
 Memory Vault has no runtime dependencies.
 
-## Install globally (recommended)
+### Install globally
 
 Wire every harness on your machine once:
 
@@ -50,7 +69,7 @@ npx -y memory-vault uninstall --global                # undo exactly what instal
 
 Restart your sessions after installing. Per-repo `install` (below) remains for team-shared, committed configs or a custom space name. An existing `~/.memroam` store from the memroam-era releases is detected and kept — nothing moves without you.
 
-## Install into a repository
+### Install into a repository
 
 Run this from the repository you want to connect:
 
@@ -75,7 +94,7 @@ npx -y memory-vault install --yes                    # skip the prompt, accept d
 
 Restart your agent session after installing and approve the `vault` MCP server if prompted (installs from the memroam-era releases registered it as `memroam`; rerunning `install` renames it).
 
-## Uninstall from a repository
+### Uninstall from a repository
 
 ```sh
 npx -y memory-vault uninstall
@@ -83,7 +102,7 @@ npx -y memory-vault uninstall
 
 Removes everything `install` wrote to the repository — the MCP entries, the rules sections, the dsh patch — deleting a file only when it held nothing else. Your memories are never touched, and the server keeps running for other projects. `disconnect` is an alias for `uninstall`.
 
-## Check the wiring
+### Check the wiring
 
 ```sh
 npx -y memory-vault status
@@ -91,7 +110,7 @@ npx -y memory-vault status
 
 Shows whether the server is up and which store it serves, how the current repository is wired per harness, and every repository recorded by `install` (kept in `~/.memory-vault-connections.json`). If the server is up and the repo is wired but your agent session has no vault tools, the remaining cause is session attachment — `status` prints how to fix it.
 
-## Import native memory, project to memoryless harnesses
+### Import native memory, project to memoryless harnesses
 
 ```sh
 npx -y memory-vault import     # Claude Code auto-memory + Codex sqlite → candidates/
@@ -100,7 +119,7 @@ npx -y memory-vault project    # regenerate the read-only shared/ block in dsh's
 
 `import` copies each harness's native memory into the matching space's `candidates/` directory — searchable and labeled `[candidate]`, excluded from the index, never written into canonical memory automatically. The Codex reader is read-only and refuses unknown database schema versions. Both commands print a capability report of what they can and cannot move, and take `--dry-run` / `--json`.
 
-### Supported harnesses
+#### Supported harnesses
 
 | Harness | Files configured |
 |---|---|
@@ -118,17 +137,7 @@ For DSH, start a session with the generated patch:
 dsh --patch ./dsh-cordis.patch.yml --profile headless "your task"
 ```
 
-## Hosted tier
-
-The hosted tier is the same server run for you: a remote MCP endpoint secured with OAuth 2.1, storing your memories as commits in a private GitHub repository **you own**. Connect it to Claude (claude.ai custom connector), ChatGPT (custom connector via the OpenAI search/fetch contract), Codex, or any remote-MCP client:
-
-```text
-https://memoryvault.click/mcp
-```
-
-Every memory is a markdown file in your repo — clone it, grep it, take it anywhere. Losing access to the hosted tier never means losing your memory.
-
-## Run the server directly
+### Run the server directly
 
 ```sh
 MEMORY_DIR=~/.memory-vault npx memory-vault
@@ -143,7 +152,7 @@ The server listens on `127.0.0.1:8787` by default.
 
 From a cloned repository, `npm start` runs the same server.
 
-### MCP endpoints
+#### MCP endpoints
 
 ```text
 POST /mcp/<project>  project memory plus shared memory

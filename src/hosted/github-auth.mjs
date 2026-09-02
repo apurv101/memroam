@@ -97,6 +97,17 @@ export async function verifyInstallation(installationId, githubId) {
   return { repo_full_name: repo.full_name, repo_id: String(repo.id), default_branch: repo.default_branch };
 }
 
+// Find a live installation on the user's own account, if any. GitHub's
+// installations/new page dead-ends on a "configure" screen when the App is
+// already installed (no redirect back to the Setup URL), so an existing
+// installation must be discovered and adopted server-side instead.
+export async function findUserInstallation(login) {
+  const creds = await appCreds();
+  const jwt = appJwt(creds);
+  const res = await ghApi(`/users/${encodeURIComponent(login)}/installation`, { token: jwt });
+  return res.ok ? String(res.json.id) : null;
+}
+
 export async function mintInstallationToken(installationId) {
   const creds = await appCreds();
   const jwt = appJwt(creds);
