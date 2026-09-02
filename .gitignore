@@ -34,3 +34,6 @@ evals/datasets/
 evals/results/**/.cache/
 evals_memory_arena/datasets/
 evals_memory_arena/results/**/.cache/
+
+# Supervisor attempt logs (scratch; results/ carries the real outputs)
+evals/results/.supervisor/

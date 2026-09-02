@@ -6,24 +6,6 @@
 //                      [--no-cache] [--keep-vault] [--bare] [--only health|judge]
 //                      [--provider dashscope --base-url URL --api-key-env NAME
 //                       [--wire-api responses|chat]]
-//                      [--vault-from results/<writer-cell>]
-//                      [--harness claude,codex [--model sonnet,default]]
-//
-// Cross-harness cells (the writer × reader matrix):
-//   --vault-from <dir>  skip ingest; seed each conversation's vault from the
-//                       writer cell's <config>-<conv>.vault.tgz snapshot, then
-//                       QA with this run's --harness. Cell lands in
-//                       <writer>2<reader>-<memory>-<model>/ (e.g.
-//                       claude2codex-vault-sonnet/). Snapshot hashes fold into
-//                       the cache key, so a re-ingested writer invalidates the
-//                       reader's cache.
-//   --harness a,b       interleaved ingest: session i is ingested by harness
-//                       i % n (order matters — it fixes who takes session 0).
-//                       QA/judge run on the FIRST listed harness; to read the
-//                       interleaved vault from another harness, finish with
-//                       --only health and point --vault-from at the cell.
-//                       --model may be a matching comma list ("default" or an
-//                       empty slot = that CLI's default model).
 //
 // --only health  ingest (cache-resumable) + health checks + vault snapshots,
 //                no QA/judge. --only judge re-runs the judge over this
@@ -69,10 +51,10 @@ import {
 } from "./lib.mjs";
 
 loadDotEnv(); // evals/.env — endpoints/keys per provider; real env vars win
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join, dirname } from "node:path";
 
 const RESULTS_DIR = join(EVALS_DIR, "results");
 
@@ -82,14 +64,8 @@ const { opt, flag } = cliArgs();
 
 const cfg = {
   suite: opt("suite", "micro"),
-  // QA/ingest harness; judge always runs on claude. A comma list means
-  // interleaved ingest (session i → harness i % n); QA uses the first listed.
-  harness: opt("harness", "claude"),
+  harness: opt("harness", "claude"), // QA/ingest harness; judge always runs on claude
   memory: opt("memory", "vault"),    // memory system under test: vault | native (native TBD)
-  // Cross-harness reader mode: a writer cell dir holding *.vault.tgz
-  // snapshots. Ingest is skipped; each conversation's vault is seeded from the
-  // writer's snapshot and QA runs with this run's --harness.
-  vaultFrom: opt("vault-from", null),
   // Model aliases are harness-specific: "sonnet" only means something to claude.
   // Other harnesses default to their CLI's own default model (null = omit -m).
   model: opt("model", null),
@@ -115,83 +91,43 @@ const cfg = {
   judgeTimeoutMs: Number(opt("judge-timeout", 120_000)),
 };
 
-cfg.harnesses = cfg.harness.split(",").map((s) => s.trim()).filter(Boolean);
-for (const h of cfg.harnesses)
-  if (!drivers[h]) throw new Error(`unknown --harness ${h} (have: ${Object.keys(drivers).join(", ")})`);
-if (!cfg.harnesses.length) throw new Error("--harness: empty harness list");
-cfg.harness = cfg.harnesses[0]; // QA/judge side; ingest rotates over the full list
-if (cfg.memory !== "vault") throw new Error(`--memory ${cfg.memory} not implemented yet (only "vault")`);
+if (!drivers[cfg.harness]) throw new Error(`unknown --harness ${cfg.harness} (have: ${Object.keys(drivers).join(", ")})`);
+if (!["vault", "native"].includes(cfg.memory)) throw new Error(`--memory ${cfg.memory}: expected "vault" or "native"`);
+// Native memory = the harness's own built-in auto-memory. Only Claude Code has
+// one (per-project memory dir + MEMORY.md, instructions in the CLI system
+// prompt). Codex 0.149 has no agentic memory — its honest "native" control is
+// the closed_book baseline, so a codex native cell would measure nothing real.
+if (cfg.memory === "native") {
+  if (cfg.harness !== "claude")
+    throw new Error(`--memory native: only claude has native auto-memory (codex has none — use its closed_book baseline as the control)`);
+  if (cfg.bare)
+    throw new Error(`--memory native is incompatible with --bare (bare strips the auto-memory system prompt). Isolation comes from a throwaway HOME instead.`);
+}
 if (cfg.only && !["health", "judge"].includes(cfg.only))
   throw new Error(`--only ${cfg.only}: expected "health" or "judge"`);
-if (cfg.vaultFrom) {
-  if (cfg.harnesses.length > 1)
-    throw new Error("--vault-from skips ingest, so a harness list is meaningless — pass the single reader harness");
-  if (!existsSync(cfg.vaultFrom)) throw new Error(`--vault-from ${cfg.vaultFrom}: no such directory`);
-}
 // Backend flag validation is shared with smoke.mjs (lib.mjs). It must run
 // before the claude alias default below, so `--provider dashscope` can't
 // silently send "sonnet" to a backend that has no such model.
 assertBackendFlags(cfg);
-// Per-harness models: a comma list aligned with --harness ("default" or an
-// empty slot = the CLI's own default); a single value applies to every
-// harness; unset falls back to claude's "sonnet" alias, others' CLI default.
-{
-  const given = cfg.model == null ? null : cfg.model.split(",").map((s) => s.trim());
-  if (given && given.length > 1 && given.length !== cfg.harnesses.length)
-    throw new Error(`--model lists ${given.length} models for ${cfg.harnesses.length} harnesses`);
-  cfg.models = cfg.harnesses.map((h, i) => {
-    const m = given ? (given.length === 1 ? given[0] : given[i]) : (h === "claude" ? "sonnet" : null);
-    return m === "" || m === "default" ? null : m;
-  });
-  cfg.model = cfg.models[0]; // QA/judge-side model
-}
+if (cfg.harness === "claude") cfg.model ??= "sonnet";
 // Fill baseUrl/apiKeyEnv from the evals/.env provider profile when not given
-// explicitly (throws if the provider has no URL for a harness's wire format).
-// Harnesses speak different wire protocols, so an explicit --base-url can't
-// serve a mixed list — provider profiles resolve per harness.
-if (cfg.baseUrl && cfg.harnesses.length > 1)
-  throw new Error("--base-url is ambiguous with multiple harnesses — use an evals/.env provider profile");
-cfg.backends = Object.fromEntries(cfg.harnesses.map((h) => [h,
-  resolveBackend({ provider: cfg.provider, harness: h, baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv })]));
-Object.assign(cfg, cfg.backends[cfg.harness]); // QA-side backend keeps the old field names
-for (const [h, b] of Object.entries(cfg.backends))
-  if (b.apiKeyEnv && !process.env[b.apiKeyEnv])
-    throw new Error(`--api-key-env ${b.apiKeyEnv} (${h}): that env var is not set`);
-
-// Writer-cell snapshots for --vault-from: hash this suite's *.vault.tgz up
-// front so the digest can fold into the cache key — a re-ingested writer must
-// invalidate the reader's cached answers, not silently reuse them. Snapshot
-// names start with the writer's configTag, which starts with the suite name,
-// so filtering on it keeps other suites' snapshots out of both the digest and
-// the per-conversation match.
-const seedTarballs = {};
-if (cfg.vaultFrom) {
-  for (const f of readdirSync(cfg.vaultFrom).filter((f) => f.endsWith(".vault.tgz") && f.startsWith(`${cfg.suite}-`)).sort())
-    seedTarballs[f] = createHash("sha256").update(readFileSync(join(cfg.vaultFrom, f))).digest("hex").slice(0, 16);
-  if (!Object.keys(seedTarballs).length)
-    throw new Error(`--vault-from ${cfg.vaultFrom}: no ${cfg.suite}-*.vault.tgz snapshots found (run the writer cell on this suite first, e.g. with --only health)`);
-}
+// explicitly (throws if the provider has no URL for this harness's wire format).
+Object.assign(cfg, resolveBackend({ provider: cfg.provider, harness: cfg.harness, baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv }));
+if (cfg.apiKeyEnv && !process.env[cfg.apiKeyEnv])
+  throw new Error(`--api-key-env ${cfg.apiKeyEnv}: that env var is not set`);
 
 // One folder per matrix cell — <harness>-<memory>-<model>/ — holding that
 // cell's results JSONL, vault snapshots, and its own resume cache. Deleting a
-// cell folder cleanly forgets the run. Interleaved ingest joins the harness
-// list with "+" (claude+codex-vault-...); a --vault-from reader cell prefixes
-// the writer, read as "written-by 2(to) read-by": claude2codex-vault-....
-const harnessesTag = cfg.harnesses.join("+");
-const harnessTag = harnessesTag === "claude" ? "" : `-${harnessesTag}`;
-const modelTag = [...new Set(cfg.models.map((m) => m ?? "default"))].join("+").replace(/[^a-zA-Z0-9._+-]/g, "_");
+// cell folder cleanly forgets the run.
+const harnessTag = cfg.harness === "claude" ? "" : `-${cfg.harness}`;
+const modelTag = (cfg.model ?? "default").replace(/[^a-zA-Z0-9._-]/g, "_");
 const providerTag = cfg.provider === "native" ? "" : `-${cfg.provider.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-// The writer cell's identity, for naming: its folder's harness token
-// (claude-vault-sonnet → claude, claude+codex-vault-… → claude+codex).
-const writerLabel = cfg.vaultFrom ? basename(cfg.vaultFrom).split("-")[0] : null;
-const cellTag = `${writerLabel ? `${writerLabel}2` : ""}${harnessesTag}-${cfg.memory}-${modelTag}${providerTag}`;
+const cellTag = `${cfg.harness}-${cfg.memory}-${modelTag}${providerTag}`;
 const CELL_DIR = join(RESULTS_DIR, cellTag);
 const configTag = `${cfg.suite}${cfg.conv ? `-c${cfg.conv}` : ""}${harnessTag}-${modelTag}${providerTag}${cfg.bare ? "-bare" : ""}`;
 const configHash = createHash("sha256")
   .update(JSON.stringify({ suite: cfg.suite, model: cfg.model, judge: cfg.judgeModel, bare: cfg.bare, PROMPTS_VERSION,
     ...(cfg.harness !== "claude" ? { harness: cfg.harness } : {}),
-    ...(cfg.harnesses.length > 1 ? { harnesses: cfg.harnesses, models: cfg.models } : {}),
-    ...(cfg.vaultFrom ? { seedTarballs } : {}),
     ...(cfg.memory !== "vault" ? { memory: cfg.memory } : {}),
     ...(cfg.provider !== "native" ? { provider: cfg.provider, baseUrl: cfg.baseUrl } : {}) }))
   .digest("hex").slice(0, 12);
@@ -251,17 +187,44 @@ async function loadSuite(name) {
 
 let workDir; // sterile cwd shared by all calls — no project CLAUDE.md, no .mcp.json
 
+// ── Native-memory (claude auto-memory) plumbing ───────────────────────────────
+// The CLI keys its memory dir on the session cwd, so each conversation gets a
+// STABLE cwd (NATIVE_ROOT/<conv-id>) reused across its ingest sessions and its
+// memory-arm QA. All native calls run under a throwaway HOME so the user's real
+// ~/.claude (global CLAUDE.md, real auto-memory, credentials) never leaks in;
+// auth + backend routing are rebuilt in the env (same keys the claude driver
+// sets — the `env` contract override replaces the child env outright).
+let NATIVE_HOME = null, NATIVE_ROOT = null;
+const NATIVE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "LS"]; // no Bash: shrink the disk-read surface
+const NATIVE_READ_TOOLS = ["Read", "Glob", "Grep", "LS"];
+const nativeEnv = () => ({
+  ...process.env, HOME: NATIVE_HOME,
+  ...(cfg.baseUrl ? {
+    ANTHROPIC_BASE_URL: cfg.baseUrl,
+    ANTHROPIC_AUTH_TOKEN: process.env[cfg.apiKeyEnv ?? ""] ?? "",
+    ANTHROPIC_API_KEY: "",
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? "8192",
+  } : {}),
+});
+const nativeConvWork = (convId) => join(NATIVE_ROOT, convId);
+// The CLI mangles the session cwd into a project-dir name: realpath first
+// (macOS /var → /private/var), then every non-alphanumeric character → "-"
+// (verified live 2026-08-30: /var/folders/…/tmp.XLVe0cAz4X →
+// -private-var-folders-…-tmp-XLVe0cAz4X). NATIVE_ROOT is stored realpathed,
+// so mangling the conv cwd directly matches what the CLI creates.
+const nativeMemDir = (convId) =>
+  join(NATIVE_HOME, ".claude", "projects", nativeConvWork(convId).replace(/[^a-zA-Z0-9]/g, "-"), "memory");
+
 // QA + ingest go through the selected harness, routed to --base-url when set;
 // the judge is the measurement instrument and is held constant across cells:
 // always the claude driver, always subscription auth (never --bare, so a bare
 // QA run can't silently move judging onto API billing), env scrubbed of any
 // custom-backend routing even if the user exported it shell-wide.
-const runAgentOn = (h, o) => drivers[h].run({
+const runAgent = (o) => drivers[cfg.harness].run({
   bare: cfg.bare, workDir,
-  baseUrl: cfg.backends[h].baseUrl, apiKeyEnv: cfg.backends[h].apiKeyEnv, wireApi: cfg.wireApi,
+  baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv, wireApi: cfg.wireApi,
   ...o,
 });
-const runAgent = (o) => runAgentOn(cfg.harness, o);
 const judgeEnv = { ...process.env };
 delete judgeEnv.ANTHROPIC_BASE_URL;
 delete judgeEnv.ANTHROPIC_AUTH_TOKEN;
@@ -291,14 +254,20 @@ const git = (cmd) => { try { return execSync(cmd, { cwd: REPO_DIR }).toString().
 // the judge (always the claude driver) over this config's cached answers.
 const judgeOnly = cfg.only === "judge";
 
-// One QA call for a unit: prompt shape by system, vault access only for "vault".
+// One QA call for a unit: prompt shape by system. The memory arm is "vault"
+// (MCP, read-only tools) or "native" (claude auto-memory: same memory-QA
+// prompt, no MCP, read-only file tools, the conversation's stable cwd, temp
+// HOME). Baselines in a native cell also run under the temp HOME — non-bare
+// with the real HOME would auto-load the user's actual memory — but from the
+// shared sterile workDir, whose project dir has no memory.
 const askQA = (q, system, conv, server, today) => runAgent({
   prompt:
-    system === "vault" ? qaVaultPrompt(q, today) :
+    system === "vault" || system === "native" ? qaVaultPrompt(q, today) :
     system === "closed_book" ? qaClosedBookPrompt(q, today) :
     qaFullContextPrompt(q, today, conv),
   mcpUrl: system === "vault" ? `${server.base}/mcp/${q.conv}` : null,
-  allowedTools: system === "vault" ? VAULT_READ_TOOLS : [], // QA is read-only
+  allowedTools: system === "vault" ? VAULT_READ_TOOLS : system === "native" ? NATIVE_READ_TOOLS : [],
+  ...(cfg.memory === "native" ? { env: nativeEnv(), ...(system === "native" ? { workDir: nativeConvWork(q.conv) } : {}) } : {}),
   model: cfg.model,
   timeoutMs: cfg.qaTimeoutMs,
   label: `qa-${q.id}-${system}`,
@@ -349,31 +318,16 @@ async function main() {
     const ids = new Set(suite.conversations.map((c) => c.id));
     suite.questions = suite.questions.filter((q) => ids.has(q.conv));
   }
-
-  // --vault-from preflight: every conversation must match exactly one writer
-  // snapshot before anything spawns — a half-seedable matrix is a config
-  // error, not something to discover mid-run.
-  const seedFor = {};
-  if (cfg.vaultFrom) {
-    for (const conv of suite.conversations) {
-      const matches = Object.keys(seedTarballs).filter((f) => f.endsWith(`-${conv.id}.vault.tgz`));
-      if (matches.length !== 1)
-        throw new Error(`--vault-from: ${conv.id} matches ${matches.length} snapshot(s)${matches.length ? `: ${matches.join(", ")}` : ""} in ${cfg.vaultFrom} — expected exactly one (mixed configs in the writer cell? pass --conv, or clean the extra tarballs out)`);
-      seedFor[conv.id] = matches[0];
-    }
-  }
-
   const today = new Date().toISOString().slice(0, 10);
 
-  const usesCodex = cfg.harnesses.includes("codex");
-  const codexPin = usesCodex && !judgeOnly ? await approvalPin() : null;
+  const codexPin = cfg.harness === "codex" && !judgeOnly ? await approvalPin() : null;
   const contamination = [
-    cfg.bare ? "QA bare mode (clean room)" : "subscription mode: global ~/.claude/CLAUDE.md auto-loads into eval agents",
+    cfg.memory === "native"
+      ? "native memory: non-bare (auto-memory needs the CLI system prompt) under a throwaway HOME — user CLAUDE.md/memory/credentials excluded; file tools (no Bash), but Read can reach the whole disk: residual leak risk, same class as codex shell"
+      : cfg.bare ? "QA bare mode (clean room)" : "subscription mode: global ~/.claude/CLAUDE.md auto-loads into eval agents",
     "judge: always claude subscription mode (non-bare), custom-backend env scrubbed",
     ...(cfg.provider !== "native" ? [`QA model served by ${cfg.provider} (${cfg.baseUrl})`] : []),
-    ...(cfg.harnesses.length > 1 ? [`interleaved ingest over [${cfg.harnesses.join(", ")}] (session i → harness i % n); QA/judge on ${cfg.harness} only`] : []),
-    ...(cfg.vaultFrom ? [`vaults seeded from writer cell ${cfg.vaultFrom} — no ingest ran in this cell; reader is ${cfg.harness}`] : []),
-    ...(usesCodex ? [
+    ...(cfg.harness === "codex" ? [
       "codex: --ignore-user-config clean room (auth from CODEX_HOME)",
       "codex: shell tool active in read-only sandbox with full-disk reads; each call gets a private empty cwd, but disk-wide exploration is a residual risk",
     ] : []),
@@ -385,23 +339,21 @@ async function main() {
     configHash,
     promptsVersion: PROMPTS_VERSION,
     harness: cfg.harness,
-    ...(cfg.harnesses.length > 1 ? { harnesses: cfg.harnesses, models: cfg.models, ingestRotation: "session i → harnesses[i % n]; QA/judge on harnesses[0]" } : {}),
     memory: cfg.memory,
     cell: cellTag,
     model: cfg.model,
-    ...(cfg.vaultFrom ? { vaultFrom: cfg.vaultFrom, seedTarballs } : {}),
     provider: cfg.provider,
     ...(cfg.provider !== "native" ? { baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv, wireApi: cfg.wireApi } : {}),
     judgeModel: cfg.judgeModel,
-    qaReadTools: VAULT_READ_TOOLS, // locomo-c*-sonnet (Aug 19) ran view-only
+    qaReadTools: cfg.memory === "native" ? NATIVE_READ_TOOLS : VAULT_READ_TOOLS, // locomo-c*-sonnet (Aug 19) ran view-only
     bare: cfg.bare,
     ...(cfg.only ? { only: cfg.only } : {}),
     contamination,
-    ...(usesCodex ? { codexApprovalPin: codexPin?.name ?? "none (using default candidate)" } : {}),
+    ...(cfg.harness === "codex" ? { codexApprovalPin: codexPin?.name ?? "none (using default candidate)" } : {}),
     harnessGitSha: git("git rev-parse HEAD"),
     serverDirty: git("git status --porcelain server.mjs") !== "" ? "server.mjs has uncommitted changes" : "clean",
     claudeVersion: (() => { try { return execSync("claude --version").toString().trim(); } catch { return "unknown"; } })(),
-    ...(usesCodex
+    ...(cfg.harness === "codex"
       ? { codexVersion: (() => { try { return execSync("codex --version").toString().trim(); } catch { return "unknown"; } })() }
       : {}),
     node: process.version,
@@ -409,64 +361,76 @@ async function main() {
   });
 
   let memoryDir = null, server = null;
-  if (!judgeOnly) {
+  if (!judgeOnly && cfg.memory === "vault") {
     memoryDir = await mkdtemp(join(tmpdir(), "vault-eval-mem-"));
     server = await spawnVaultServer(memoryDir);
     console.log(`server on :${server.port}, vault at ${memoryDir}`);
   }
+  if (!judgeOnly && cfg.memory === "native") {
+    // realpath both: the CLI mangles the REALPATHED cwd, and nativeMemDir must
+    // compute the same string (mkdtemp under macOS tmpdir returns /var/… which
+    // is a symlink to /private/var/…).
+    const { realpathSync } = await import("node:fs");
+    NATIVE_HOME = realpathSync(await mkdtemp(join(tmpdir(), "native-eval-home-")));
+    NATIVE_ROOT = realpathSync(await mkdtemp(join(tmpdir(), "native-eval-work-")));
+    console.log(`native memory: throwaway HOME ${NATIVE_HOME}, conv cwds under ${NATIVE_ROOT}`);
+  }
 
   try {
-    // ── Ingest (resumable per session: snapshot the vault after each one).
-    //    With --vault-from, no ingest runs: each scope is seeded from the
-    //    writer cell's snapshot. With a --harness list, session i is ingested
-    //    by harness i % n (index-deterministic, so cache resume stays
-    //    consistent with the rotation). ──
+    // ── Ingest (resumable per session: snapshot the memory dir after each) ──
+    // Vault cells snapshot the server's scope dir; native cells snapshot the
+    // CLI's auto-memory dir for the conversation's cwd. Both restore into a
+    // fresh location on resume, so cross-invocation resume works identically.
     for (const conv of judgeOnly ? [] : suite.conversations) {
-      const scopeDir = join(memoryDir, conv.id);
-      if (cfg.vaultFrom) {
+      const native = cfg.memory === "native";
+      if (native) await mkdir(nativeConvWork(conv.id), { recursive: true });
+      const scopeDir = native ? nativeMemDir(conv.id) : join(memoryDir, conv.id);
+      const snapAt = (n) => join(CACHE_DIR, `vault-${conv.id}-s${n}.tgz`);
+      let start = 0;
+      if (!cfg.noCache)
+        for (let n = conv.sessions.length; n >= 1; n--)
+          if (existsSync(snapAt(n))) { start = n; break; }
+      if (start > 0) {
         await mkdir(scopeDir, { recursive: true });
-        execSync(`tar -xzf "${join(cfg.vaultFrom, seedFor[conv.id])}" -C "${scopeDir}"`);
-        console.log(`[seed] ${conv.id}: ${seedFor[conv.id]} (sha256 ${seedTarballs[seedFor[conv.id]]})`);
-        await emit({ type: "seed", conv: conv.id, source: seedFor[conv.id], sha256: seedTarballs[seedFor[conv.id]] });
-      } else {
-        const snapAt = (n) => join(CACHE_DIR, `vault-${conv.id}-s${n}.tgz`);
-        let start = 0;
-        if (!cfg.noCache)
-          for (let n = conv.sessions.length; n >= 1; n--)
-            if (existsSync(snapAt(n))) { start = n; break; }
-        if (start > 0) {
-          await mkdir(scopeDir, { recursive: true });
-          execSync(`tar -xzf "${snapAt(start)}" -C "${scopeDir}"`);
-          console.log(`[ingest] ${conv.id}: restored cache through session ${start}/${conv.sessions.length}`);
-          await emit({ type: "ingest", conv: conv.id, fromCache: true, throughSession: start });
-        } else {
-          await seedScope(memoryDir, conv.id);
-        }
-        for (let i = start; i < conv.sessions.length; i++) {
-          const session = conv.sessions[i];
-          const h = cfg.harnesses[i % cfg.harnesses.length];
-          const hTag = cfg.harnesses.length > 1 ? { harness: h } : {};
-          const r = await runAgentOn(h, {
-            prompt: ingestPrompt(session),
-            mcpUrl: `${server.base}/mcp/${conv.id}`,
-            allowedTools: VAULT_TOOLS,
-            model: cfg.models[i % cfg.harnesses.length],
-            timeoutMs: cfg.ingestTimeoutMs,
-            label: `ingest-${conv.id}-${i}`,
-          });
-          // Never snapshot an errored ingest — it would poison the resume cache
-          // with an empty/partial vault that later runs silently restore.
-          if (r.isError) {
-            await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, ...hTag, isError: true, text: String(r.text).slice(0, 300) });
-            throw new Error(`ingest ${conv.id} session ${i} (${h}) failed: ${String(r.text).slice(0, 300)}`);
-          }
-          execSync(`tar -czf "${snapAt(i + 1)}" -C "${scopeDir}" .`);
-          console.log(`[ingest] ${conv.id} session ${i + 1}/${conv.sessions.length} (${session.date}${cfg.harnesses.length > 1 ? `, ${h}` : ""}): ${r.numTurns} turns, $${r.costUsd?.toFixed(4)}`);
-          await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, ...hTag, turns: r.numTurns, costUsd: r.costUsd, usage: r.usage, models: r.models, durationMs: r.durationMs, isError: r.isError });
-        }
+        execSync(`tar -xzf "${snapAt(start)}" -C "${scopeDir}"`);
+        console.log(`[ingest] ${conv.id}: restored cache through session ${start}/${conv.sessions.length}`);
+        await emit({ type: "ingest", conv: conv.id, fromCache: true, throughSession: start });
+      } else if (!native) {
+        await seedScope(memoryDir, conv.id);
       }
-      // Health + snapshot into results/ (a --vault-from cell re-snapshots the
-      // seeded bytes so the cross cell stays self-contained and deletable)
+      for (let i = start; i < conv.sessions.length; i++) {
+        const session = conv.sessions[i];
+        const r = await runAgent({
+          prompt: ingestPrompt(session),
+          mcpUrl: native ? null : `${server.base}/mcp/${conv.id}`,
+          allowedTools: native ? NATIVE_TOOLS : VAULT_TOOLS,
+          ...(native ? { env: nativeEnv(), workDir: nativeConvWork(conv.id) } : {}),
+          model: cfg.model,
+          timeoutMs: cfg.ingestTimeoutMs,
+          label: `ingest-${conv.id}-${i}`,
+        });
+        // Never snapshot an errored ingest — it would poison the resume cache
+        // with an empty/partial vault that later runs silently restore.
+        if (r.isError) {
+          await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, isError: true, text: String(r.text).slice(0, 300) });
+          throw new Error(`ingest ${conv.id} session ${i} failed: ${String(r.text).slice(0, 300)}`);
+        }
+        // Native: the memory dir is created by the CLI on first write. If our
+        // path-mangling guess is wrong we'd silently snapshot an empty dir —
+        // so verify on the very first session and fail loud with what exists.
+        if (native && !existsSync(scopeDir)) {
+          const projRoot = join(NATIVE_HOME, ".claude", "projects");
+          const found = existsSync(projRoot) ? execSync(`ls "${projRoot}"`).toString().trim() : "(no projects dir)";
+          if (i === start && found.includes(conv.id)) {
+            throw new Error(`native memory dir not at expected mangled path ${scopeDir} — projects dir holds: ${found} (cwd-mangling rule changed?)`);
+          }
+          await mkdir(scopeDir, { recursive: true }); // model persisted nothing this session — snapshot stays empty, health will flag it
+        }
+        execSync(`tar -czf "${snapAt(i + 1)}" -C "${scopeDir}" .`);
+        console.log(`[ingest] ${conv.id} session ${i + 1}/${conv.sessions.length} (${session.date}): ${r.numTurns} turns, $${r.costUsd?.toFixed(4)}`);
+        await emit({ type: "ingest", conv: conv.id, session: i, date: session.date, turns: r.numTurns, costUsd: r.costUsd, usage: r.usage, models: r.models, durationMs: r.durationMs, isError: r.isError });
+      }
+      // Health + snapshot into results/
       const health = await healthCheck(scopeDir, suite.questions.filter((q) => q.conv === conv.id));
       console.log(`[health] ${conv.id}: ${health.files} files, ${health.bytes}B, ${health.staleFacts} stale, ${health.issues.length} issues`);
       await emit({ type: "health", conv: conv.id, ...health });
@@ -479,7 +443,9 @@ async function main() {
     }
 
     // ── QA + judge (worker pool; per-unit errors don't kill the run) ──
-    const systems = ["vault", ...(cfg.baselines ? ["closed_book", "full_context"] : [])];
+    // The memory arm is named for the system under test ("vault" or "native")
+    // so result records and tallies stay honest across cells.
+    const systems = [cfg.memory, ...(cfg.baselines ? ["closed_book", "full_context"] : [])];
     const units = suite.questions.flatMap((q) => systems.map((system) => ({ q, system })));
     const tally = {};
     let next = 0, done = 0;
@@ -536,6 +502,10 @@ async function main() {
     if (memoryDir) {
       if (cfg.keepVault) console.log(`vault kept at ${memoryDir}`);
       else await rm(memoryDir, { recursive: true, force: true });
+    }
+    if (NATIVE_HOME) {
+      if (cfg.keepVault) console.log(`native memory kept under ${NATIVE_HOME}`);
+      else { await rm(NATIVE_HOME, { recursive: true, force: true }); await rm(NATIVE_ROOT, { recursive: true, force: true }); }
     }
     await rm(workDir, { recursive: true, force: true });
   }

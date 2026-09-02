@@ -1,0 +1,6 @@
+[
+  {
+    "name": "interleave2codex",
+    "args": "--suite locomo --harness codex --model qwen3.5-35b-a3b --provider vast --vault-from evals/results/claude+codex-vault-qwen3.5-35b-a3b-vast --qa-concurrency 12 --qa-timeout 420000"
+  }
+]

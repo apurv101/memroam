@@ -1,0 +1,14 @@
+[
+  {
+    "name": "sonnet2gpt56-c1",
+    "args": "--suite locomo --conv 1 --harness codex --vault-from evals/results/claude-vault-sonnet --qa-concurrency 3 --qa-timeout 420000"
+  },
+  {
+    "name": "sonnet2gpt56-c2",
+    "args": "--suite locomo --conv 2 --harness codex --vault-from evals/results/claude-vault-sonnet --qa-concurrency 3 --qa-timeout 420000"
+  },
+  {
+    "name": "sonnet2gpt56-c3",
+    "args": "--suite locomo --conv 3 --harness codex --vault-from evals/results/claude-vault-sonnet --qa-concurrency 3 --qa-timeout 420000"
+  }
+]

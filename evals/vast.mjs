@@ -29,7 +29,7 @@
 // VAST_SHIM_PID. Network note: prefer an in-region host — RTT hides behind
 // 5-15s generation turns, and higher --qa-concurrency cancels the rest.
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { writeFile, rm, mkdtemp, mkdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -264,12 +264,27 @@ async function startShim() {
   } catch {}
   if (hoistUp) console.log(`hoist already up on :${HOIST_PORT}`);
   else {
+    // A hoist from a previous pod may still hold the port with the dead
+    // upstream baked into its env — it fails the probe above, and a fresh
+    // spawn dies silently on EADDRINUSE (stdio is ignored), leaving LiteLLM
+    // chained to the stale one. Evict any listener before spawning.
+    try { execSync(`lsof -ti tcp:${HOIST_PORT} -sTCP:LISTEN | xargs kill`, { stdio: "ignore" }); } catch {}
     const hp = spawn("node", [join(EVALS_DIR, "vast-hoist.mjs")], {
       env: { ...process.env, VAST_UPSTREAM_OPENAI_BASE_URL: state.VAST_UPSTREAM_OPENAI_BASE_URL, HOIST_PORT: String(HOIST_PORT) },
       detached: true, stdio: "ignore",
     });
     hp.unref();
     hoistPid = hp.pid;
+    // Verify it bound AND proxies to the live upstream (/v1/models round-trips).
+    let ok = false;
+    for (let i = 0; i < 10 && !ok; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        ok = (await fetch(`http://127.0.0.1:${HOIST_PORT}/v1/models`, {
+          headers: { Authorization: `Bearer ${state.VAST_API_KEY}` }, signal: AbortSignal.timeout(4000) })).ok;
+      } catch {}
+    }
+    if (!ok) throw new Error(`hoist spawned but :${HOIST_PORT}/v1/models does not answer — upstream unreachable or port conflict`);
     console.log(`hoist up on :${HOIST_PORT} (pid ${hoistPid})`);
   }
   try {
